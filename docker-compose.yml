@@ -1,0 +1,15 @@
+services:
+  collapse-irc:
+    build: .
+    image: collapse-irc-server:latest
+    container_name: collapse-irc-server
+    ports:
+      - "1338:1338"
+    restart: unless-stopped
+    volumes:
+      - ./banned_users.txt:/app/banned_users.txt:rw
+    healthcheck:
+      test: [ "CMD-SHELL", "pgrep irc || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
