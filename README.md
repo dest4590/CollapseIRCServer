@@ -1,6 +1,9 @@
-# CollapseIRCServer
+<div align=center>
+   <img width=128 alt="CollapseIRC" src="https://github.com/user-attachments/assets/4a9b1d2b-4b78-423d-b83e-4f73e29d7bfd" />
+   <h1>CollapseIRCServer</h1>
+</div>
 
-A lightweight, secure IRC server written in Go, designed exclusively for CollapseLoader IRC chat integration.
+<p align=center>A lightweight, secure IRC server written in Go, designed exclusively for CollapseLoader IRC chat integration.</p>
 
 ### Core Features
 
