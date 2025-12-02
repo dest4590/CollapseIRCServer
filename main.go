@@ -70,7 +70,7 @@ func maskToken(token string) string {
 	//	return strings.Repeat("*", len(token))
 	//}
 	//return token[:4] + strings.Repeat("*", len(token)-8) + token[len(token)-4:]
-	return token[:8]
+	return token
 }
 
 func sanitizeUsername(username string) (string, error) {
