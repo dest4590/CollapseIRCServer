@@ -415,7 +415,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		user.lastMessageTime = currentTime
 
 		if !isAuthenticated {
-			user.send("Guests cannot send messages")
+			user.send("Guests cannot send messages, please authenticate in loader\nГостям запрещено отправлять сообщения, пожалуйста, авторизуйтесь в лоадере")
 			log.Printf("[SECURITY] Blocked send attempt from guest '%s' (ID: %s) from %s", user.name, user.userID, conn.RemoteAddr())
 			continue
 		}
