@@ -366,10 +366,6 @@ func (s *Server) handleConnection(conn net.Conn) {
 	isBanned := s.bannedUsers[realUserID]
 	s.mutex.Unlock()
 
-	if !isAuthenticated {
-		isBanned = true
-	}
-
 	user := &User{
 		socket:             conn,
 		name:               username,
