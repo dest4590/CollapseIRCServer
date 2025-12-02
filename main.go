@@ -463,12 +463,18 @@ func (s *Server) findUserByPartialName(partialName string) *User {
 	partialLower := strings.ToLower(partialName)
 
 	for u := range s.users {
+		if u.role == "guest" {
+			continue
+		}
 		if strings.ToLower(u.name) == partialLower {
 			return u
 		}
 	}
 
 	for u := range s.users {
+		if u.role == "guest" {
+			continue
+		}
 		if strings.HasPrefix(strings.ToLower(u.name), partialLower) {
 			return u
 		}
@@ -482,12 +488,18 @@ func (s *Server) findAllMatchingUsers(partialName string) []*User {
 	var matches []*User
 
 	for u := range s.users {
+		if u.role == "guest" {
+			continue
+		}
 		if strings.ToLower(u.name) == partialLower {
 			return []*User{u}
 		}
 	}
 
 	for u := range s.users {
+		if u.role == "guest" {
+			continue
+		}
 		if strings.HasPrefix(strings.ToLower(u.name), partialLower) {
 			matches = append(matches, u)
 		}
@@ -672,7 +684,12 @@ func (s *Server) handleUserCommand(user *User, command string) bool {
 		return true
 	case "@online":
 		s.mutex.Lock()
-		userCount := len(s.users)
+		userCount := 0
+		for u := range s.users {
+			if u.role != "guest" {
+				userCount++
+			}
+		}
 		s.mutex.Unlock()
 		user.send(fmt.Sprintf("Channel info: %d users online", userCount))
 		return true
@@ -680,7 +697,9 @@ func (s *Server) handleUserCommand(user *User, command string) bool {
 		s.mutex.Lock()
 		var userNames []string
 		for user := range s.users {
-			userNames = append(userNames, user.name)
+			if user.role != "guest" {
+				userNames = append(userNames, user.name)
+			}
 		}
 		s.mutex.Unlock()
 		user.send(fmt.Sprintf("Online users (%d): %s", len(userNames), strings.Join(userNames, ", ")))
