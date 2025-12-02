@@ -71,7 +71,6 @@ func maskToken(token string) string {
 	}
 	return token[:4] + strings.Repeat("*", len(token)-8) + token[len(token)-4:]
 
-	//return token
 }
 
 func sanitizeUsername(username string) (string, error) {
@@ -342,21 +341,34 @@ func (s *Server) handleConnection(conn net.Conn) {
 	username = sanitizedUsername
 
 	realUserID, role, err := s.authenticateUser(token)
+	isAuthenticated := true
 	if err != nil {
-		conn.Write([]byte("Authentication failed\n"))
-		return
+		log.Printf("[AUTH] Invalid token for connection %s: %s", conn.RemoteAddr(), maskToken(token))
+		s.mutex.Lock()
+		guestID := fmt.Sprintf("guest-%d", s.userIDCounter)
+		s.userIDCounter++
+		s.mutex.Unlock()
+		realUserID = guestID
+		role = "guest"
+		isAuthenticated = false
 	}
 
-	if providedUserID != realUserID {
-		conn.Write([]byte("Authentication failed\n"))
-		log.Printf("[SECURITY] User ID mismatch from %s. Provided: %s, Expected: %s, Token: %s",
-			conn.RemoteAddr(), providedUserID, realUserID, maskToken(token))
-		return
+	if isAuthenticated {
+		if providedUserID != realUserID {
+			conn.Write([]byte("Authentication failed\n"))
+			log.Printf("[SECURITY] User ID mismatch from %s. Provided: %s, Expected: %s, Token: %s",
+				conn.RemoteAddr(), providedUserID, realUserID, maskToken(token))
+			return
+		}
 	}
 
 	s.mutex.Lock()
 	isBanned := s.bannedUsers[realUserID]
 	s.mutex.Unlock()
+
+	if !isAuthenticated {
+		isBanned = true
+	}
 
 	user := &User{
 		socket:             conn,
@@ -369,7 +381,10 @@ func (s *Server) handleConnection(conn net.Conn) {
 		isBanned:           isBanned,
 	}
 
-	if isBanned {
+	if !isAuthenticated {
+		user.send("Connected as read-only guest (authentication failed). You can read messages but cannot send.")
+		log.Printf("[AUTH] Read-only guest '%s' (ID: %s) connected from %s (provided ID: %s)", username, realUserID, conn.RemoteAddr(), providedUserID)
+	} else if isBanned {
 		user.send("You are banned from writing messages, but you can read them")
 		log.Printf("[SECURITY] Banned user %s (%s) role=%s connected from %s", username, realUserID, role, conn.RemoteAddr())
 	}
