@@ -414,6 +414,12 @@ func (s *Server) handleConnection(conn net.Conn) {
 		}
 		user.lastMessageTime = currentTime
 
+		if !isAuthenticated {
+			user.send("Guests cannot send messages")
+			log.Printf("[SECURITY] Blocked send attempt from guest '%s' (ID: %s) from %s", user.name, user.userID, conn.RemoteAddr())
+			continue
+		}
+
 		if user.isBanned && !strings.HasPrefix(message, "@ping") && !strings.HasPrefix(message, "@online") && !strings.HasPrefix(message, "@help") {
 			user.send("You are banned and cannot send messages")
 			log.Printf("[BANNED] Message blocked from banned user '%s' (ID: %s): %s", user.name, user.userID, message)
