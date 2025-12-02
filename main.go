@@ -30,7 +30,7 @@ const (
 )
 
 var (
-	usernamePattern   = regexp.MustCompile(`^[a-zA-Z0-9_\-\s]{1,32}$`)
+	usernamePattern   = regexp.MustCompile(`^[\p{L}\p{N}\p{P}\p{Z}§]{1,256}$`)
 	messagePattern    = regexp.MustCompile(`^[\p{L}\p{N}\p{P}\p{Z}§]{1,256}$`)
 	dangerousPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`\x00|\x01|\x02|\x03|\x04|\x05|\x06|\x07|\x08|\x0E|\x0F`),
