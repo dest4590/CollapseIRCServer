@@ -3,3 +3,4 @@ irc.exe
 banned_users.txt
 .env
 *.exe
+tmp/

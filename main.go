@@ -39,8 +39,9 @@ var (
 )
 
 type AuthResponse struct {
-	UserID interface{} `json:"user_id"`
-	Role   string      `json:"role"`
+	UserID   interface{} `json:"user_id"`
+	Username string      `json:"username"`
+	Role     string      `json:"role"`
 }
 
 type Server struct {
@@ -60,6 +61,7 @@ type User struct {
 	role               string
 	token              string
 	clientName         string
+	clientType         string
 	lastMessageTime    time.Time
 	lastPrivatePartner string
 	isBanned           bool
@@ -219,35 +221,35 @@ func (s *Server) saveBannedUsers() {
 	log.Printf("[INFO] Saved %d banned users to file", len(s.bannedUsers))
 }
 
-func (s *Server) authenticateUser(token string) (string, string, error) {
+func (s *Server) authenticateUser(token string) (string, string, string, error) {
 	client := &http.Client{
 		Timeout: adminTimeout,
 	}
 
 	resp, err := client.Get(userIDURL + "/" + token + "/")
 	if err != nil {
-		return "", "", createSecureError(
+		return "", "", "", createSecureError(
 			"authentication failed",
 			"failed to authenticate token %s: %v", maskToken(token), err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return "", "", createSecureError(
+		return "", "", "", createSecureError(
 			"authentication failed",
 			"invalid token, status code: %d, token: %s", resp.StatusCode, maskToken(token))
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", "", createSecureError(
+		return "", "", "", createSecureError(
 			"authentication failed",
 			"failed to read auth response for token %s: %v", maskToken(token), err)
 	}
 
 	var authResponse AuthResponse
 	if err := json.Unmarshal(body, &authResponse); err != nil {
-		return "", "", createSecureError(
+		return "", "", "", createSecureError(
 			"authentication failed",
 			"failed to parse auth JSON for token %s: %v", maskToken(token), err)
 	}
@@ -261,14 +263,15 @@ func (s *Server) authenticateUser(token string) (string, string, error) {
 	case int:
 		userID = fmt.Sprintf("%d", v)
 	default:
-		return "", "", createSecureError(
+		return "", "", "", createSecureError(
 			"authentication failed",
 			"unexpected user_id type %T for token %s", v, maskToken(token))
 	}
 
 	role := strings.TrimSpace(authResponse.Role)
+	username := strings.TrimSpace(authResponse.Username)
 
-	return userID, role, nil
+	return userID, username, role, nil
 }
 
 func (s *Server) run() {
@@ -278,12 +281,12 @@ func (s *Server) run() {
 			s.mutex.Lock()
 			s.users[user] = true
 			s.mutex.Unlock()
-			log.Printf("[REGISTER] User '%s' (ID: %s, role: %s, client: %s) connected from %s", user.name, user.userID, user.role, user.clientName, user.socket.RemoteAddr())
+			log.Printf("[REGISTER] User '%s' (ID: %s, role: %s, client: %s, type: %s) connected from %s", user.name, user.userID, user.role, user.clientName, user.clientType, user.socket.RemoteAddr())
 		case user := <-s.unregister:
 			s.mutex.Lock()
 			if _, ok := s.users[user]; ok {
 				delete(s.users, user)
-				log.Printf("[UNREGISTER] User '%s' (ID: %s, role: %s, client: %s) disconnected from %s", user.name, user.userID, user.role, user.clientName, user.socket.RemoteAddr())
+				log.Printf("[UNREGISTER] User '%s' (ID: %s, role: %s, client: %s, type: %s) disconnected from %s", user.name, user.userID, user.role, user.clientName, user.clientType, user.socket.RemoteAddr())
 			}
 			s.mutex.Unlock()
 		case message := <-s.broadcast:
@@ -316,31 +319,64 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}
 
 	parts := strings.Split(authData, "@:@")
-	if len(parts) < 3 {
+	if len(parts) < 1 {
 		conn.Write([]byte("Invalid authentication format\n"))
 		log.Printf("[SECURITY] Invalid auth format from %s (length: %d)", conn.RemoteAddr(), len(parts))
 		return
 	}
 
-	providedUserID := strings.TrimSpace(parts[0])
-	username := strings.TrimSpace(parts[1])
-	token := strings.TrimSpace(parts[2])
 	clientName := ""
+	clientType := "client"
 
-	if len(parts) >= 4 {
-		clientName = strings.TrimSpace(strings.Join(parts[3:], "@:@"))
-		clientName = sanitizeString(clientName)
+	legacyFormat := len(parts) >= 3 && strings.TrimSpace(parts[1]) != "loader" && strings.TrimSpace(parts[1]) != "client"
+	token := strings.TrimSpace(parts[0])
+
+	if legacyFormat {
+		token = strings.TrimSpace(parts[2])
+		if token == "" {
+			conn.Write([]byte("Invalid authentication format\n"))
+			log.Printf("[SECURITY] Legacy auth missing token from %s", conn.RemoteAddr())
+			return
+		}
+
+		if len(parts) >= 4 {
+			p3 := strings.TrimSpace(parts[3])
+			if p3 == "loader" || p3 == "client" {
+				clientType = p3
+				if clientType == "loader" {
+					clientName = "CollapseLoader"
+				} else if len(parts) >= 5 {
+					clientName = sanitizeString(strings.Join(parts[4:], "@:@"))
+				}
+			} else {
+				clientName = sanitizeString(strings.Join(parts[3:], "@:@"))
+			}
+		}
+
+		log.Printf("[INFO] Received legacy IRC auth format from %s; userid/username ignored", conn.RemoteAddr())
+	} else {
+		if token == "" {
+			conn.Write([]byte("Invalid authentication format\n"))
+			log.Printf("[SECURITY] Missing token in auth from %s", conn.RemoteAddr())
+			return
+		}
+
+		if len(parts) >= 2 {
+			p1 := strings.TrimSpace(parts[1])
+			if p1 == "loader" || p1 == "client" {
+				clientType = p1
+				if clientType == "loader" {
+					clientName = "CollapseLoader"
+				} else if len(parts) >= 3 {
+					clientName = sanitizeString(strings.Join(parts[2:], "@:@"))
+				}
+			} else {
+				clientName = sanitizeString(strings.Join(parts[1:], "@:@"))
+			}
+		}
 	}
 
-	sanitizedUsername, err := sanitizeUsername(username)
-	if err != nil {
-		conn.Write([]byte("Invalid username\n"))
-		log.Printf("[SECURITY] Username validation failed from %s: %v", conn.RemoteAddr(), err)
-		return
-	}
-	username = sanitizedUsername
-
-	realUserID, role, err := s.authenticateUser(token)
+	realUserID, usernameFromAuth, role, err := s.authenticateUser(token)
 	isAuthenticated := true
 	if err != nil {
 		log.Printf("[AUTH] Invalid token for connection %s: %s", conn.RemoteAddr(), maskToken(token))
@@ -353,13 +389,25 @@ func (s *Server) handleConnection(conn net.Conn) {
 		isAuthenticated = false
 	}
 
-	if isAuthenticated {
-		if providedUserID != realUserID {
-			conn.Write([]byte("Authentication failed\n"))
-			log.Printf("[SECURITY] User ID mismatch from %s. Provided: %s, Expected: %s, Token: %s",
-				conn.RemoteAddr(), providedUserID, realUserID, maskToken(token))
-			return
+	username := usernameFromAuth
+	if !isAuthenticated {
+		username = fmt.Sprintf("Guest-%s", realUserID)
+	}
+
+	username = strings.TrimSpace(username)
+	if username == "" {
+		username = fmt.Sprintf("User-%s", realUserID)
+	}
+
+	sanitizedUsername, err := sanitizeUsername(username)
+	if err != nil {
+		log.Printf("[SECURITY] Username validation failed for %s: %v", realUserID, err)
+		username = sanitizeString(username)
+		if username == "" {
+			username = fmt.Sprintf("User-%s", realUserID)
 		}
+	} else {
+		username = sanitizedUsername
 	}
 
 	s.mutex.Lock()
@@ -373,13 +421,14 @@ func (s *Server) handleConnection(conn net.Conn) {
 		role:               role,
 		token:              token,
 		clientName:         clientName,
+		clientType:         clientType,
 		lastPrivatePartner: "",
 		isBanned:           isBanned,
 	}
 
 	if !isAuthenticated {
 		user.send("Connected as read-only guest (authentication failed). You can read messages but cannot send.")
-		log.Printf("[AUTH] Read-only guest '%s' (ID: %s) connected from %s (provided ID: %s)", username, realUserID, conn.RemoteAddr(), providedUserID)
+		log.Printf("[AUTH] Read-only guest '%s' (ID: %s) connected from %s", username, realUserID, conn.RemoteAddr())
 	} else if isBanned {
 		user.send("You are banned from writing messages, but you can read them")
 		log.Printf("[SECURITY] Banned user %s (%s) role=%s connected from %s", username, realUserID, role, conn.RemoteAddr())
