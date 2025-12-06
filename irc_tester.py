@@ -15,7 +15,7 @@ def send_line(sock: socket.socket, line: str) -> None:
 
 
 def connect_and_auth(
-    host: str, port: int, user_id: str, username: str, token: str, client_name: str
+    host: str, port: int, token: str, client_name: str
 ) -> Optional[socket.socket]:
     try:
         sock = socket.create_connection((host, port), timeout=5)
@@ -23,7 +23,7 @@ def connect_and_auth(
         print(f"Failed to connect to {host}:{port}: {e}")
         return None
 
-    auth_line = f"{user_id}@:@{username}@:@{token}@:@{client_name}"
+    auth_line = f"@:@{token}@:@{client_name}"
     try:
         send_line(sock, auth_line)
     except Exception as e:
@@ -59,15 +59,11 @@ def main():
 
     host = args.host or os.getenv("IRC_HOST", "127.0.0.1")
     port = args.port or int(os.getenv("IRC_PORT", "1338"))
-    user_id = os.getenv("IRC_USER_ID")
-    username = os.getenv("IRC_USERNAME")
     token = os.getenv("IRC_TOKEN")
     client_name = os.getenv("IRC_CLIENT", "irc_tester")
 
-    if not user_id or not username or not token:
-        print(
-            "Missing required credentials in .env: IRC_USER_ID, IRC_USERNAME, IRC_TOKEN"
-        )
+    if not token:
+        print("Missing required credentials in .env: IRC_TOKEN")
         sys.exit(2)
 
     if args.message:
@@ -83,7 +79,7 @@ def main():
             sys.exit(1)
         messages = [msg]
 
-    sock = connect_and_auth(host, port, user_id, username, token, client_name)
+    sock = connect_and_auth(host, port, token, client_name)
     if not sock:
         sys.exit(1)
 

@@ -27,6 +27,7 @@ const (
 	maxUsernameChars = 32
 	maxMessageChars  = 256
 	tokenMaskLength  = 8
+	historyLimit     = 50
 )
 
 var (
@@ -47,11 +48,12 @@ type AuthResponse struct {
 type Server struct {
 	users         map[*User]bool
 	bannedUsers   map[string]bool
-	broadcast     chan string
+	broadcast     chan ChatPayload
 	register      chan *User
 	unregister    chan *User
 	mutex         sync.Mutex
 	userIDCounter uint64
+	history       []ChatPayload
 }
 
 type User struct {
@@ -65,6 +67,14 @@ type User struct {
 	lastMessageTime    time.Time
 	lastPrivatePartner string
 	isBanned           bool
+	prefersJSON        bool
+}
+
+type ChatPayload struct {
+	Type    string `json:"type"`
+	Time    string `json:"time"`
+	Content string `json:"content"`
+	History bool   `json:"history,omitempty"`
 }
 
 func maskToken(token string) string {
@@ -181,10 +191,11 @@ func newServer() *Server {
 	server := &Server{
 		users:         make(map[*User]bool),
 		bannedUsers:   make(map[string]bool),
-		broadcast:     make(chan string),
+		broadcast:     make(chan ChatPayload),
 		register:      make(chan *User),
 		unregister:    make(chan *User),
 		userIDCounter: 1,
+		history:       make([]ChatPayload, 0, historyLimit),
 	}
 	server.loadBannedUsers()
 	return server
@@ -289,17 +300,48 @@ func (s *Server) run() {
 				log.Printf("[UNREGISTER] User '%s' (ID: %s, role: %s, client: %s, type: %s) disconnected from %s", user.name, user.userID, user.role, user.clientName, user.clientType, user.socket.RemoteAddr())
 			}
 			s.mutex.Unlock()
-		case message := <-s.broadcast:
+		case payload := <-s.broadcast:
 			s.mutex.Lock()
 			activeUsers := 0
 			for user := range s.users {
-				go user.send(message)
+				go user.sendPayload(payload)
 				activeUsers++
 			}
 			s.mutex.Unlock()
 			log.Printf("[BROADCAST] Message sent to %d active users", activeUsers)
 		}
 	}
+}
+
+func (s *Server) appendToHistory(payload ChatPayload) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	s.history = append(s.history, payload)
+	if len(s.history) > historyLimit {
+		overflow := len(s.history) - historyLimit
+		s.history = append([]ChatPayload(nil), s.history[overflow:]...)
+	}
+}
+
+func (s *Server) sendHistoryToUser(user *User) {
+	if !user.prefersJSON {
+		return
+	}
+
+	s.mutex.Lock()
+	historyCopy := append([]ChatPayload(nil), s.history...)
+	s.mutex.Unlock()
+
+	for _, item := range historyCopy {
+		item.History = true
+		user.sendPayload(item)
+	}
+}
+
+func (s *Server) broadcastMessage(payload ChatPayload) {
+	s.appendToHistory(payload)
+	s.broadcast <- payload
 }
 
 func (s *Server) handleConnection(conn net.Conn) {
@@ -424,6 +466,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		clientType:         clientType,
 		lastPrivatePartner: "",
 		isBanned:           isBanned,
+		prefersJSON:        clientType == "loader",
 	}
 
 	if !isAuthenticated {
@@ -435,6 +478,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}
 
 	s.register <- user
+	s.sendHistoryToUser(user)
 
 	defer func() {
 		s.unregister <- user
@@ -504,7 +548,13 @@ func (s *Server) handleConnection(conn net.Conn) {
 		fullMessage := fmt.Sprintf("%s: %s", sender, message)
 		log.Printf("[MESSAGE] %s", fullMessage)
 
-		s.broadcast <- fullMessage
+		payload := ChatPayload{
+			Type:    "chat",
+			Time:    time.Now().UTC().Format(time.RFC3339),
+			Content: fullMessage,
+		}
+
+		s.broadcastMessage(payload)
 	}
 }
 
@@ -636,11 +686,29 @@ func (s *Server) handleQuickReply(user *User, message string) {
 	log.Printf("[PRIVATE REPLY] %s -> %s: %s", user.name, user.lastPrivatePartner, replyMessage)
 }
 
-func (u *User) send(message string) {
+func (u *User) sendRaw(message string) {
 	_, err := u.socket.Write([]byte(message + "\n"))
 	if err != nil {
 		log.Printf("[ERROR] Failed to send message to user '%s' (ID: %s): %v", u.name, u.userID, err)
 	}
+}
+
+func (u *User) send(message string) {
+	u.sendRaw(message)
+}
+
+func (u *User) sendPayload(payload ChatPayload) {
+	if u.prefersJSON {
+		data, err := json.Marshal(payload)
+		if err != nil {
+			log.Printf("[ERROR] Failed to marshal payload for user '%s' (ID: %s): %v", u.name, u.userID, err)
+			return
+		}
+		u.sendRaw(string(data))
+		return
+	}
+
+	u.sendRaw(payload.Content)
 }
 
 var roleColorMap = map[string]string{
@@ -754,17 +822,25 @@ func (s *Server) handleUserCommand(user *User, command string) bool {
 		user.send(fmt.Sprintf("Online users (%d): %s", len(userNames), strings.Join(userNames, ", ")))
 		return true
 	case "@help":
+		var commandPrefix string
+
+		if user.clientType == "loader" {
+			commandPrefix = "@"
+		} else {
+			commandPrefix = "@@"
+		}
+
 		helpText := "Available commands:\n" +
-			"@@ping - Test server connection\n" +
-			"@@online - Show number of online users\n" +
-			"@@who / @@list - List online users\n" +
-			"@@help - Show this help message\n" +
-			"@@msg <nickname> <message> - Send private message (supports partial names)\n" +
-			"@@r <message> - Reply to last private message\n" +
+			commandPrefix + "ping - Test server connection\n" +
+			commandPrefix + "online - Show number of online users\n" +
+			commandPrefix + "who / " + commandPrefix + "list - List online users\n" +
+			commandPrefix + "help - Show this help message\n" +
+			commandPrefix + "msg <nickname> <message> - Send private message (supports partial names)\n" +
+			commandPrefix + "r <message> - Reply to last private message\n" +
 			"Admin commands (require authentication):\n" +
-			"@@ban <user_id> - Ban a user\n" +
-			"@@unban <user_id> - Unban a user\n" +
-			"@@sysmsg <message> - Send system message to all users"
+			commandPrefix + "ban <user_id> - Ban a user\n" +
+			commandPrefix + "unban <user_id> - Unban a user\n" +
+			commandPrefix + "sysmsg <message> - Send system message to all users"
 		user.send(helpText)
 		return true
 	default:
@@ -857,7 +933,13 @@ func (s *Server) handleAdminCommand(user *User, command string) bool {
 		mcBold := "§l" + systemMessage + "§r"
 		fullMessage := fmt.Sprintf("§c§lSystem§r: %s", mcBold)
 
-		s.broadcast <- fullMessage
+		payload := ChatPayload{
+			Type:    "chat",
+			Time:    time.Now().UTC().Format(time.RFC3339),
+			Content: fullMessage,
+		}
+
+		s.broadcastMessage(payload)
 		user.send("System message sent successfully")
 		log.Printf("[ADMIN] System message sent by admin '%s' (ID: %s): %s", user.name, user.userID, systemMessage)
 		return true

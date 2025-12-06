@@ -9,7 +9,7 @@ load_dotenv()
 
 
 def connect_and_auth(
-    host: str, port: int, user_id: str, username: str, token: str, client_name: str
+    host: str, port: int, token: str, client_name: str
 ) -> Optional[socket.socket]:
     try:
         sock = socket.create_connection((host, port), timeout=10)
@@ -17,7 +17,7 @@ def connect_and_auth(
         print(f"[connect] Failed to connect to {host}:{port}: {e}")
         return None
 
-    auth_line = f"{user_id}@:@{username}@:@{token}@:@{client_name}"
+    auth_line = f"@:@{token}@:@{client_name}"
 
     try:
         sock.sendall((auth_line + "\n").encode("utf-8"))
@@ -51,25 +51,19 @@ def tail_socket(sock: socket.socket) -> None:
 def main() -> None:
     host = os.getenv("IRC_HOST", "127.0.0.1")
     port = int(os.getenv("IRC_PORT", "1338"))
-    user_id = os.getenv("IRC_USER_ID")
-    username = os.getenv("IRC_USERNAME")
     token = os.getenv("IRC_TOKEN")
     client_name = os.getenv("IRC_CLIENT", "irc_wather")
 
-    if not user_id or not username or not token:
-        print(
-            "Missing required credentials in .env: IRC_USER_ID, IRC_USERNAME, IRC_TOKEN"
-        )
+    if not token:
+        print("Missing required credentials in .env: IRC_TOKEN")
         sys.exit(2)
 
-    print(
-        f"Connecting to {host}:{port} as {username} (id={user_id}) using client={client_name}"
-    )
+    print(f"Connecting to {host}:{port} using client={client_name}")
 
     backoff = 1.0
     try:
         while True:
-            sock = connect_and_auth(host, port, user_id, username, token, client_name)
+            sock = connect_and_auth(host, port, token, client_name)
             if not sock:
                 print(f"Reconnect in {backoff:.1f}s...")
                 time.sleep(backoff)
