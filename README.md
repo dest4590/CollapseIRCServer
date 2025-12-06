@@ -3,16 +3,16 @@
    <h1>CollapseIRCServer</h1>
 </div>
 
-<p align=center>A lightweight, secure IRC server written in Go, designed exclusively for CollapseLoader IRC chat integration.</p>
+<p align=center>A lightweight, secure IRC server written in Go with JSON-based protocol (NDJSON), designed for CollapseLoader integration.</p>
 
 ### Core Features
 
--   Real-time global chat
--   Private messaging (@msg, @r)
--   Role-based colors and permissions
--   Ban/unban system
--   System messages
--   Message cooldown and length limits
+-   **JSON Protocol**: Structured, robust communication using NDJSON.
+-   Real-time global chat.
+-   Private messaging (@msg, @r).
+-   Role-based colors and permissions.
+-   Ban/unban system.
+-   System messages.
 
 ### User Roles & Colors
 
@@ -24,20 +24,78 @@
 | Developer | §6     | Gold   | Send system messages |
 | Owner     | §d     | Purple | Full privileges      |
 
-### How Authentication Works
+### JSON Protocol Specification
 
-1. Client connects using special credentials format:  
-   `<user_id>@:@<username>@:@<auth_token>` (optional `@:@<client_name>`)
-2. Server calls CollapseLoader API:
-    - `https://auth.collapseloader.org/auth/status`
-    - `https://auth.collapseloader.org/auth/irc-info/{token}/`
-3. If token is valid and user ID matches → user is authenticated and assigned correct role/color.
+The server uses **NDJSON** (Newline Delimited JSON). Every message is a single line containing a valid JSON object.
 
-### Available Commands
+#### 1. Authentication (Client -> Server)
+
+Sent immediately after connection.
+
+```json
+{
+    "op": "auth",
+    "token": "YOUR_AUTH_TOKEN",
+    "type": "loader", // "loader" or "client"
+    "client": "CollapseLoader" // client name
+}
+```
+
+#### 2. Sending Messages (Client -> Server)
+
+**Chat Message:**
+
+```json
+{
+    "op": "chat",
+    "content": "Hello world!"
+}
+```
+
+**Commands:**
+Commands are sent inside the `content` field starting with `@`:
+
+```json
+{
+    "op": "chat",
+    "content": "@msg User123 hello private!"
+}
+```
+
+**Ping:**
+
+```json
+{ "op": "ping" }
+```
+
+#### 3. Receiving Messages (Server -> Client)
+
+**Chat Message:**
+
+```json
+{
+    "type": "chat",
+    "time": "2023-10-01T12:00:00Z",
+    "content": "§fUser [§fUser§r]: Hello world!",
+    "history": false
+}
+```
+
+**System/Error Message:**
+
+```json
+{
+    "type": "system", // or "error", "private"
+    "content": "You are connected as guest",
+    "time": "..."
+}
+```
+
+### Available Commands (In Chat)
 
 | Command            | Description                       |
 | ------------------ | --------------------------------- |
-| @ping              | Check connection                  |
+| @ping              | Check connection (returns PONG)   |
 | @online            | Show online user count            |
 | @who / @list       | List all connected users          |
 | @help              | Show help                         |
@@ -47,13 +105,7 @@
 | @unban <user_id>   | (Admin+) Unban user               |
 | @sysmsg <text>     | (Admin+/Dev/Owner) System message |
 
-### Message Format Examples
-
--   Public: `§asigma§r [§aTester§r]: hi guys`
--   Private (received): `[PM from §cAdmin§r]: hi bro`
--   System: `§c§lSystem§r: §lImportant announcement!§r`
-
-### Quick Start (Docker – Recommended)
+### Quick Start (Docker)
 
 ```bash
 git clone https://github.com/dest4590/CollapseIRCServer
@@ -61,7 +113,7 @@ cd CollapseIRCServer
 docker compose up --build -d
 ```
 
-### Quick Start (go)
+### Quick Start (Go)
 
 ```bash
 git clone https://github.com/dest4590/CollapseIRCServer
@@ -69,4 +121,4 @@ cd CollapseIRCServer
 go run main.go
 ```
 
-Server will listen on port **1338**.
+Server listens on port **1338**.

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,7 +17,6 @@ import (
 
 const (
 	cooldown         = 1 * time.Second
-	maxNameLength    = 32
 	maxMsgLength     = 256
 	authURL          = "https://auth.collapseloader.org/auth/status"
 	userIDURL        = "https://auth.collapseloader.org/auth/irc-info"
@@ -39,6 +37,14 @@ var (
 	}
 )
 
+type IncomingPacket struct {
+	Op      string `json:"op"`
+	Token   string `json:"token,omitempty"`
+	Type    string `json:"type,omitempty"`
+	Client  string `json:"client,omitempty"`
+	Content string `json:"content,omitempty"`
+}
+
 type AuthResponse struct {
 	UserID   interface{} `json:"user_id"`
 	Username string      `json:"username"`
@@ -48,16 +54,17 @@ type AuthResponse struct {
 type Server struct {
 	users         map[*User]bool
 	bannedUsers   map[string]bool
-	broadcast     chan ChatPayload
+	broadcast     chan OutgoingPacket
 	register      chan *User
 	unregister    chan *User
 	mutex         sync.Mutex
 	userIDCounter uint64
-	history       []ChatPayload
+	history       []OutgoingPacket
 }
 
 type User struct {
 	socket             net.Conn
+	encoder            *json.Encoder
 	name               string
 	userID             string
 	role               string
@@ -67,12 +74,11 @@ type User struct {
 	lastMessageTime    time.Time
 	lastPrivatePartner string
 	isBanned           bool
-	prefersJSON        bool
 }
 
-type ChatPayload struct {
+type OutgoingPacket struct {
 	Type    string `json:"type"`
-	Time    string `json:"time"`
+	Time    string `json:"time,omitempty"`
 	Content string `json:"content"`
 	History bool   `json:"history,omitempty"`
 }
@@ -82,7 +88,6 @@ func maskToken(token string) string {
 		return strings.Repeat("*", len(token))
 	}
 	return token[:4] + strings.Repeat("*", len(token)-8) + token[len(token)-4:]
-
 }
 
 func sanitizeUsername(username string) (string, error) {
@@ -191,11 +196,11 @@ func newServer() *Server {
 	server := &Server{
 		users:         make(map[*User]bool),
 		bannedUsers:   make(map[string]bool),
-		broadcast:     make(chan ChatPayload),
+		broadcast:     make(chan OutgoingPacket),
 		register:      make(chan *User),
 		unregister:    make(chan *User),
 		userIDCounter: 1,
-		history:       make([]ChatPayload, 0, historyLimit),
+		history:       make([]OutgoingPacket, 0, historyLimit),
 	}
 	server.loadBannedUsers()
 	return server
@@ -300,11 +305,13 @@ func (s *Server) run() {
 				log.Printf("[UNREGISTER] User '%s' (ID: %s, role: %s, client: %s, type: %s) disconnected from %s", user.name, user.userID, user.role, user.clientName, user.clientType, user.socket.RemoteAddr())
 			}
 			s.mutex.Unlock()
-		case payload := <-s.broadcast:
+		case packet := <-s.broadcast:
 			s.mutex.Lock()
 			activeUsers := 0
 			for user := range s.users {
-				go user.sendPayload(payload)
+				go func(u *User, p OutgoingPacket) {
+					u.sendPacket(p)
+				}(user, packet)
 				activeUsers++
 			}
 			s.mutex.Unlock()
@@ -313,109 +320,61 @@ func (s *Server) run() {
 	}
 }
 
-func (s *Server) appendToHistory(payload ChatPayload) {
+func (s *Server) appendToHistory(packet OutgoingPacket) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	s.history = append(s.history, payload)
+	s.history = append(s.history, packet)
 	if len(s.history) > historyLimit {
 		overflow := len(s.history) - historyLimit
-		s.history = append([]ChatPayload(nil), s.history[overflow:]...)
+		s.history = append([]OutgoingPacket(nil), s.history[overflow:]...)
 	}
 }
 
 func (s *Server) sendHistoryToUser(user *User) {
-	if !user.prefersJSON {
-		return
-	}
-
 	s.mutex.Lock()
-	historyCopy := append([]ChatPayload(nil), s.history...)
+	historyCopy := append([]OutgoingPacket(nil), s.history...)
 	s.mutex.Unlock()
 
 	for _, item := range historyCopy {
 		item.History = true
-		user.sendPayload(item)
+		user.sendPacket(item)
 	}
 }
 
-func (s *Server) broadcastMessage(payload ChatPayload) {
-	s.appendToHistory(payload)
-	s.broadcast <- payload
+func (s *Server) broadcastMessage(packet OutgoingPacket) {
+	s.appendToHistory(packet)
+	s.broadcast <- packet
 }
 
 func (s *Server) handleConnection(conn net.Conn) {
 	defer conn.Close()
-	reader := bufio.NewReader(conn)
 
-	authData, err := reader.ReadString('\n')
+	decoder := json.NewDecoder(conn)
+	encoder := json.NewEncoder(conn)
+
+	var authPacket IncomingPacket
+	err := decoder.Decode(&authPacket)
 	if err != nil {
-		log.Printf("[ERROR] Could not read auth data from %s: %v", conn.RemoteAddr(), err)
-		return
-	}
-	authData = strings.TrimSpace(authData)
-
-	if isHTTPRequest(authData) {
-		log.Printf("[SECURITY] Ignoring HTTP request from: %s", conn.RemoteAddr())
+		log.Printf("[ERROR] Failed to decode auth packet from %s: %v", conn.RemoteAddr(), err)
 		return
 	}
 
-	parts := strings.Split(authData, "@:@")
-	if len(parts) < 1 {
-		conn.Write([]byte("Invalid authentication format\n"))
-		log.Printf("[SECURITY] Invalid auth format from %s (length: %d)", conn.RemoteAddr(), len(parts))
+	if authPacket.Op != "auth" {
+		log.Printf("[SECURITY] First packet was not auth from %s", conn.RemoteAddr())
+		json.NewEncoder(conn).Encode(OutgoingPacket{Type: "error", Content: "Authentication required"})
 		return
 	}
 
-	clientName := ""
-	clientType := "client"
+	token := strings.TrimSpace(authPacket.Token)
+	clientType := strings.TrimSpace(authPacket.Type)
+	clientName := sanitizeString(authPacket.Client)
 
-	legacyFormat := len(parts) >= 3 && strings.TrimSpace(parts[1]) != "loader" && strings.TrimSpace(parts[1]) != "client"
-	token := strings.TrimSpace(parts[0])
-
-	if legacyFormat {
-		token = strings.TrimSpace(parts[2])
-		if token == "" {
-			conn.Write([]byte("Invalid authentication format\n"))
-			log.Printf("[SECURITY] Legacy auth missing token from %s", conn.RemoteAddr())
-			return
-		}
-
-		if len(parts) >= 4 {
-			p3 := strings.TrimSpace(parts[3])
-			if p3 == "loader" || p3 == "client" {
-				clientType = p3
-				if clientType == "loader" {
-					clientName = "CollapseLoader"
-				} else if len(parts) >= 5 {
-					clientName = sanitizeString(strings.Join(parts[4:], "@:@"))
-				}
-			} else {
-				clientName = sanitizeString(strings.Join(parts[3:], "@:@"))
-			}
-		}
-
-		log.Printf("[INFO] Received legacy IRC auth format from %s; userid/username ignored", conn.RemoteAddr())
-	} else {
-		if token == "" {
-			conn.Write([]byte("Invalid authentication format\n"))
-			log.Printf("[SECURITY] Missing token in auth from %s", conn.RemoteAddr())
-			return
-		}
-
-		if len(parts) >= 2 {
-			p1 := strings.TrimSpace(parts[1])
-			if p1 == "loader" || p1 == "client" {
-				clientType = p1
-				if clientType == "loader" {
-					clientName = "CollapseLoader"
-				} else if len(parts) >= 3 {
-					clientName = sanitizeString(strings.Join(parts[2:], "@:@"))
-				}
-			} else {
-				clientName = sanitizeString(strings.Join(parts[1:], "@:@"))
-			}
-		}
+	if clientType == "" {
+		clientType = "client"
+	}
+	if clientType == "loader" && clientName == "" {
+		clientName = "CollapseLoader"
 	}
 
 	realUserID, usernameFromAuth, role, err := s.authenticateUser(token)
@@ -435,21 +394,19 @@ func (s *Server) handleConnection(conn net.Conn) {
 	if !isAuthenticated {
 		username = fmt.Sprintf("Guest-%s", realUserID)
 	}
-
 	username = strings.TrimSpace(username)
 	if username == "" {
 		username = fmt.Sprintf("User-%s", realUserID)
 	}
 
 	sanitizedUsername, err := sanitizeUsername(username)
-	if err != nil {
-		log.Printf("[SECURITY] Username validation failed for %s: %v", realUserID, err)
+	if err == nil {
+		username = sanitizedUsername
+	} else {
 		username = sanitizeString(username)
 		if username == "" {
 			username = fmt.Sprintf("User-%s", realUserID)
 		}
-	} else {
-		username = sanitizedUsername
 	}
 
 	s.mutex.Lock()
@@ -458,6 +415,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 	user := &User{
 		socket:             conn,
+		encoder:            encoder,
 		name:               username,
 		userID:             realUserID,
 		role:               role,
@@ -466,15 +424,17 @@ func (s *Server) handleConnection(conn net.Conn) {
 		clientType:         clientType,
 		lastPrivatePartner: "",
 		isBanned:           isBanned,
-		prefersJSON:        clientType == "loader",
 	}
 
 	if !isAuthenticated {
-		user.send("Connected as read-only guest (authentication failed). You can read messages but cannot send.")
-		log.Printf("[AUTH] Read-only guest '%s' (ID: %s) connected from %s", username, realUserID, conn.RemoteAddr())
+		user.sendSystem("Connected as read-only guest. You can read but not send.")
 	} else if isBanned {
-		user.send("You are banned from writing messages, but you can read them")
-		log.Printf("[SECURITY] Banned user %s (%s) role=%s connected from %s", username, realUserID, role, conn.RemoteAddr())
+		user.sendSystem("You are banned from writing messages.")
+	} else {
+		user.sendPacket(OutgoingPacket{
+			Type:    "auth_success",
+			Content: fmt.Sprintf("Welcome %s!", username),
+		})
 	}
 
 	s.register <- user
@@ -485,76 +445,94 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}()
 
 	for {
-		message, err := reader.ReadString('\n')
+		var packet IncomingPacket
+		err := decoder.Decode(&packet)
 		if err != nil {
-			log.Printf("[DISCONNECT] Socket closed for '%s' (ID: %s) from %s", user.name, user.userID, conn.RemoteAddr())
+			if err != io.EOF {
+				log.Printf("[DISCONNECT] Decode error for '%s': %v", user.name, err)
+			}
 			break
 		}
-		message = strings.TrimSpace(message)
 
-		sanitizedMessage, err := sanitizeMessage(message)
-		if err != nil {
-			user.send("Invalid message format")
-			log.Printf("[SECURITY] Message validation failed from user '%s' (ID: %s): %v", user.name, user.userID, err)
+		switch packet.Op {
+		case "ping":
+			user.sendPacket(OutgoingPacket{Type: "pong", Content: "PONG"})
 			continue
-		}
-		message = sanitizedMessage
 
-		currentTime := time.Now()
-		if currentTime.Sub(user.lastMessageTime) < cooldown {
-			log.Printf("[COOLDOWN] Message from user '%s' (ID: %s) blocked due to cooldown", user.name, user.userID)
-			continue
-		}
-		user.lastMessageTime = currentTime
+		case "chat":
+			message := strings.TrimSpace(packet.Content)
 
-		if !isAuthenticated {
-			user.send("Guests cannot send messages, please authenticate in loader\nГостям запрещено отправлять сообщения, пожалуйста, авторизуйтесь в лоадере")
-			log.Printf("[SECURITY] Blocked send attempt from guest '%s' (ID: %s) from %s", user.name, user.userID, conn.RemoteAddr())
-			continue
-		}
+			sanitizedMessage, err := sanitizeMessage(message)
+			if err != nil {
+				user.sendSystem("Invalid message format")
+				continue
+			}
+			message = sanitizedMessage
 
-		if user.isBanned && !strings.HasPrefix(message, "@ping") && !strings.HasPrefix(message, "@online") && !strings.HasPrefix(message, "@help") {
-			user.send("You are banned and cannot send messages")
-			log.Printf("[BANNED] Message blocked from banned user '%s' (ID: %s): %s", user.name, user.userID, message)
-			continue
-		}
+			currentTime := time.Now()
+			if currentTime.Sub(user.lastMessageTime) < cooldown {
+				continue
+			}
+			user.lastMessageTime = currentTime
 
-		if strings.HasPrefix(message, "@") {
-			if strings.HasPrefix(message, "@ban ") || strings.HasPrefix(message, "@unban ") || strings.HasPrefix(message, "@sysmsg ") {
-				s.handleAdminCommand(user, message)
+			if !isAuthenticated {
+				user.sendSystem("Guests cannot send messages.")
 				continue
 			}
 
-			if strings.HasPrefix(message, "@msg ") {
-				s.handlePrivateMessage(user, message)
+			if strings.HasPrefix(message, "@") {
+				log.Printf("[COMMAND] User '%s' issued command: %s", user.name, message)
+
+				if user.isBanned && !strings.HasPrefix(message, "@help") && !strings.HasPrefix(message, "@ping") && !strings.HasPrefix(message, "@online") {
+					user.sendSystem("You are banned.")
+					continue
+				}
+
+				if strings.HasPrefix(message, "@ban ") || strings.HasPrefix(message, "@unban ") || strings.HasPrefix(message, "@sysmsg ") {
+					s.handleAdminCommand(user, message)
+					continue
+				}
+				if strings.HasPrefix(message, "@msg ") {
+					s.handlePrivateMessage(user, message)
+					continue
+				}
+				if strings.HasPrefix(message, "@r ") {
+					s.handleQuickReply(user, message)
+					continue
+				}
+				if s.handleUserCommand(user, message) {
+					continue
+				}
+
+				var commandPrefix string
+
+				if user.clientType == "loader" {
+					commandPrefix = "@"
+				} else {
+					commandPrefix = "@@"
+				}
+
+				user.sendSystem(fmt.Sprintf("Unknown command. Use %shelp", commandPrefix))
 				continue
 			}
 
-			if strings.HasPrefix(message, "@r ") {
-				s.handleQuickReply(user, message)
+			if user.isBanned {
+				user.sendSystem("You are banned.")
 				continue
 			}
 
-			if s.handleUserCommand(user, message) {
-				continue
+			sender := formatNameWithRole(user)
+			fullMessage := fmt.Sprintf("%s: %s", sender, message)
+			log.Printf("[MESSAGE] %s", fullMessage)
+
+			outPacket := OutgoingPacket{
+				Type:    "chat",
+				Time:    time.Now().UTC().Format(time.RFC3339),
+				Content: fullMessage,
 			}
 
-			user.send("Unknown command. Use @@help to see available commands")
-			log.Printf("[WARNING] Unknown command '%s' from user '%s' (ID: %s)", message, user.name, user.userID)
-			continue
+			s.broadcastMessage(outPacket)
 		}
-
-		sender := formatNameWithRole(user)
-		fullMessage := fmt.Sprintf("%s: %s", sender, message)
-		log.Printf("[MESSAGE] %s", fullMessage)
-
-		payload := ChatPayload{
-			Type:    "chat",
-			Time:    time.Now().UTC().Format(time.RFC3339),
-			Content: fullMessage,
-		}
-
-		s.broadcastMessage(payload)
 	}
 }
 
@@ -619,96 +597,137 @@ func (s *Server) getMatchingUserNames(partialName string) []string {
 func (s *Server) handlePrivateMessage(user *User, message string) {
 	parts := strings.Fields(message)
 	if len(parts) < 3 {
-		user.send("Usage: @msg <nickname> <message>")
+		user.sendSystem("Usage: @msg <nickname> <message>")
 		return
 	}
 
 	targetName := parts[1]
 	privateMessage := strings.Join(parts[2:], " ")
 
-	s.mutex.Lock()
-	targetUser := s.findUserByPartialName(targetName)
-	s.mutex.Unlock()
+	matches := s.findAllMatchingUsers(targetName)
 
-	if targetUser == nil {
-		user.send(fmt.Sprintf("User '%s' not found", targetName))
+	if len(matches) == 0 {
+		user.sendSystem(fmt.Sprintf("User '%s' not found", targetName))
 		return
 	}
 
-	if len(s.findAllMatchingUsers(targetName)) > 1 {
-		matches := s.getMatchingUserNames(targetName)
-		user.send(fmt.Sprintf("Multiple users match '%s': %s. Please be more specific.", targetName, strings.Join(matches, ", ")))
+	uniqueIDs := make(map[string]bool)
+	targetUserID := ""
+	targetUsername := ""
+
+	for _, u := range matches {
+		if _, exists := uniqueIDs[u.userID]; !exists {
+			uniqueIDs[u.userID] = true
+			targetUserID = u.userID
+			targetUsername = u.name
+		}
+	}
+
+	if len(uniqueIDs) > 1 {
+		var names []string
+		for _, u := range matches {
+			found := false
+			for _, n := range names {
+				if n == u.name {
+					found = true
+					break
+				}
+			}
+			if !found {
+				names = append(names, u.name)
+			}
+		}
+		user.sendSystem(fmt.Sprintf("Multiple users match '%s': %s. Be more specific.", targetName, strings.Join(names, ", ")))
 		return
 	}
 
-	if targetUser == user {
-		user.send("You cannot send a message to yourself")
+	if targetUserID == user.userID {
+		user.sendSystem("You cannot send a message to yourself")
 		return
 	}
 
-	user.lastPrivatePartner = targetName
-	targetUser.lastPrivatePartner = user.name
+	user.lastPrivatePartner = targetUsername
 
-	targetUser.send(fmt.Sprintf("[PM from %s]: %s", formatNameWithRole(user), privateMessage))
-	user.send(fmt.Sprintf("[PM to %s]: %s", formatNameWithRole(targetUser), privateMessage))
+	sentCount := 0
+	for _, targetUser := range matches {
+		targetUser.lastPrivatePartner = user.name
+		targetUser.sendPacket(OutgoingPacket{
+			Type:    "private",
+			Content: fmt.Sprintf("[PM from %s]: %s", formatNameWithRole(user), privateMessage),
+		})
+		sentCount++
+	}
 
-	log.Printf("[PRIVATE] %s -> %s: %s", user.name, targetName, privateMessage)
+	user.sendPacket(OutgoingPacket{
+		Type:    "private",
+		Content: fmt.Sprintf("[PM to %s]: %s", formatNameWithRole(matches[0]), privateMessage),
+	})
+
+	log.Printf("[PRIVATE] %s (ID: %s) -> %s (ID: %s) [%d sessions]: %s",
+		user.name, user.userID, targetUsername, targetUserID, sentCount, privateMessage)
 }
 
 func (s *Server) handleQuickReply(user *User, message string) {
 	if user.lastPrivatePartner == "" {
-		user.send("No previous private conversation found")
+		user.sendSystem("No previous private conversation found")
 		return
 	}
 
 	parts := strings.Fields(message)
 	if len(parts) < 2 {
-		user.send("Usage: @r <message>")
+		user.sendSystem("Usage: @r <message>")
 		return
 	}
 
 	replyMessage := strings.Join(parts[1:], " ")
 
-	s.mutex.Lock()
-	targetUser := s.findUserByPartialName(user.lastPrivatePartner)
-	s.mutex.Unlock()
+	matches := s.findAllMatchingUsers(user.lastPrivatePartner)
 
-	if targetUser == nil {
-		user.send(fmt.Sprintf("User '%s' is no longer online", user.lastPrivatePartner))
+	if len(matches) == 0 {
+		user.sendSystem(fmt.Sprintf("User '%s' is no longer online", user.lastPrivatePartner))
 		return
 	}
 
-	targetUser.lastPrivatePartner = user.name
+	var exactMatches []*User
 
-	targetUser.send(fmt.Sprintf("[PM from %s]: %s", formatNameWithRole(user), replyMessage))
-	user.send(fmt.Sprintf("[PM to %s]: %s", formatNameWithRole(targetUser), replyMessage))
+	for _, m := range matches {
+		if strings.EqualFold(m.name, user.lastPrivatePartner) {
+			exactMatches = append(exactMatches, m)
+		}
+	}
+
+	if len(exactMatches) == 0 {
+		exactMatches = matches
+	}
+
+	for _, targetUser := range exactMatches {
+		targetUser.lastPrivatePartner = user.name
+		targetUser.sendPacket(OutgoingPacket{
+			Type:    "private",
+			Content: fmt.Sprintf("[PM from %s]: %s", formatNameWithRole(user), replyMessage),
+		})
+	}
+
+	user.sendPacket(OutgoingPacket{
+		Type:    "private",
+		Content: fmt.Sprintf("[PM to %s]: %s", formatNameWithRole(exactMatches[0]), replyMessage),
+	})
 
 	log.Printf("[PRIVATE REPLY] %s -> %s: %s", user.name, user.lastPrivatePartner, replyMessage)
 }
-
-func (u *User) sendRaw(message string) {
-	_, err := u.socket.Write([]byte(message + "\n"))
+func (u *User) sendPacket(packet OutgoingPacket) {
+	err := u.encoder.Encode(packet)
 	if err != nil {
-		log.Printf("[ERROR] Failed to send message to user '%s' (ID: %s): %v", u.name, u.userID, err)
+		log.Printf("[ERROR] Failed to send JSON to user '%s': %v", u.name, err)
 	}
 }
 
-func (u *User) send(message string) {
-	u.sendRaw(message)
-}
-
-func (u *User) sendPayload(payload ChatPayload) {
-	if u.prefersJSON {
-		data, err := json.Marshal(payload)
-		if err != nil {
-			log.Printf("[ERROR] Failed to marshal payload for user '%s' (ID: %s): %v", u.name, u.userID, err)
-			return
-		}
-		u.sendRaw(string(data))
-		return
-	}
-
-	u.sendRaw(payload.Content)
+func (u *User) sendSystem(message string) {
+	u.sendPacket(OutgoingPacket{
+		Type:    "system",
+		Content: message,
+		Time:    time.Now().UTC().Format(time.RFC3339),
+	})
 }
 
 var roleColorMap = map[string]string{
@@ -740,12 +759,7 @@ func formatNameWithRole(u *User) string {
 	roleLabel, ok := displayRoleMap[role]
 	if !ok {
 		if len(role) > 0 {
-			first := strings.ToUpper(role[:1])
-			rest := ""
-			if len(role) > 1 {
-				rest = strings.ToLower(role[1:])
-			}
-			roleLabel = first + rest
+			roleLabel = strings.Title(strings.ToLower(role))
 		} else {
 			roleLabel = role
 		}
@@ -780,10 +794,7 @@ func (s *Server) authenticateAdmin(token string) bool {
 	}
 	defer resp.Body.Close()
 
-	isAdmin := resp.StatusCode == 200
-	log.Printf("[AUTH] Admin authentication %s for token %s",
-		map[bool]string{true: "successful", false: "failed"}[isAdmin], maskToken(token))
-	return isAdmin
+	return resp.StatusCode == 200
 }
 
 func (s *Server) handleUserCommand(user *User, command string) bool {
@@ -793,11 +804,10 @@ func (s *Server) handleUserCommand(user *User, command string) bool {
 	}
 
 	cmd := strings.ToLower(parts[0])
-	log.Printf("[COMMAND] User '%s' (ID: %s) executed command: %s", user.name, user.userID, cmd)
 
 	switch cmd {
 	case "@ping":
-		user.send("PONG")
+		user.sendSystem("PONG")
 		return true
 	case "@online":
 		s.mutex.Lock()
@@ -808,18 +818,30 @@ func (s *Server) handleUserCommand(user *User, command string) bool {
 			}
 		}
 		s.mutex.Unlock()
-		user.send(fmt.Sprintf("Channel info: %d users online", userCount))
+		user.sendSystem(fmt.Sprintf("Channel info: %d users online", userCount))
 		return true
 	case "@who", "@list":
 		s.mutex.Lock()
 		var userNames []string
-		for user := range s.users {
-			if user.role != "guest" {
-				userNames = append(userNames, user.name)
+		for u := range s.users {
+			if u.role != "guest" {
+				displayName := u.name
+
+				clientInfo := u.clientName
+				if clientInfo == "" {
+					clientInfo = u.clientType
+				}
+
+				if clientInfo != "" {
+					displayName += fmt.Sprintf(" §7(%s)§r", clientInfo)
+				}
+
+				userNames = append(userNames, displayName)
 			}
 		}
 		s.mutex.Unlock()
-		user.send(fmt.Sprintf("Online users (%d): %s", len(userNames), strings.Join(userNames, ", ")))
+
+		user.sendSystem(fmt.Sprintf("Online users (%d): %s", len(userNames), strings.Join(userNames, ", ")))
 		return true
 	case "@help":
 		var commandPrefix string
@@ -841,7 +863,8 @@ func (s *Server) handleUserCommand(user *User, command string) bool {
 			commandPrefix + "ban <user_id> - Ban a user\n" +
 			commandPrefix + "unban <user_id> - Unban a user\n" +
 			commandPrefix + "sysmsg <message> - Send system message to all users"
-		user.send(helpText)
+
+		user.sendSystem(helpText)
 		return true
 	default:
 		return false
@@ -851,81 +874,61 @@ func (s *Server) handleUserCommand(user *User, command string) bool {
 func (s *Server) handleAdminCommand(user *User, command string) bool {
 	parts := strings.Fields(command)
 	if len(parts) < 2 {
-		user.send("ERROR: Admin command requires parameters")
+		user.sendSystem("ERROR: Admin command requires parameters")
 		return true
 	}
 
 	if !s.authenticateAdmin(user.token) {
-		user.send("ERROR: You are not authorized to use admin commands")
-		log.Printf("[SECURITY] Failed admin authentication attempt from user '%s' (ID: %s)", user.name, user.userID)
+		user.sendSystem("ERROR: You are not authorized")
 		return true
 	}
 
 	cmd := strings.ToLower(parts[0])
 	action := cmd[1:]
-	log.Printf("[ADMIN] User '%s' (ID: %s) executed admin command: %s", user.name, user.userID, action)
 
 	switch action {
 	case "ban":
-		if len(parts) < 2 {
-			user.send("ERROR: ban requires user ID")
-			return true
-		}
 		targetID := parts[1]
 		s.mutex.Lock()
 		s.bannedUsers[targetID] = true
 		s.mutex.Unlock()
-
 		s.saveBannedUsers()
 
 		s.mutex.Lock()
 		for connectedUser := range s.users {
 			if connectedUser.userID == targetID {
 				connectedUser.isBanned = true
-				connectedUser.send("You have been banned from writing messages")
+				connectedUser.sendSystem("You have been banned.")
 				break
 			}
 		}
 		s.mutex.Unlock()
 
-		user.send(fmt.Sprintf("User %s has been banned", targetID))
-		log.Printf("[ADMIN] User %s banned by admin '%s' (ID: %s)", targetID, user.name, user.userID)
+		user.sendSystem(fmt.Sprintf("User %s banned", targetID))
 		return true
 	case "unban":
-		if len(parts) < 2 {
-			user.send("ERROR: unban requires user ID")
-			return true
-		}
 		targetID := parts[1]
 		s.mutex.Lock()
 		delete(s.bannedUsers, targetID)
 		s.mutex.Unlock()
-
 		s.saveBannedUsers()
 
 		s.mutex.Lock()
 		for connectedUser := range s.users {
 			if connectedUser.userID == targetID {
 				connectedUser.isBanned = false
-				connectedUser.send("You have been unbanned")
+				connectedUser.sendSystem("You have been unbanned.")
 				break
 			}
 		}
 		s.mutex.Unlock()
 
-		user.send(fmt.Sprintf("User %s has been unbanned", targetID))
-		log.Printf("[ADMIN] User %s unbanned by admin '%s' (ID: %s)", targetID, user.name, user.userID)
+		user.sendSystem(fmt.Sprintf("User %s unbanned", targetID))
 		return true
 	case "sysmsg":
-		if len(parts) < 2 {
-			user.send("ERROR: sysmsg requires a message")
-			return true
-		}
-
 		role := strings.ToLower(strings.TrimSpace(user.role))
 		if role != "admin" && role != "developer" && role != "owner" {
-			user.send("ERROR: You do not have permission to use sysmsg")
-			log.Printf("[SECURITY] User '%s' (ID: %s) with role '%s' attempted sysmsg", user.name, user.userID, user.role)
+			user.sendSystem("Permission denied")
 			return true
 		}
 
@@ -933,30 +936,17 @@ func (s *Server) handleAdminCommand(user *User, command string) bool {
 		mcBold := "§l" + systemMessage + "§r"
 		fullMessage := fmt.Sprintf("§c§lSystem§r: %s", mcBold)
 
-		payload := ChatPayload{
+		s.broadcastMessage(OutgoingPacket{
 			Type:    "chat",
-			Time:    time.Now().UTC().Format(time.RFC3339),
 			Content: fullMessage,
-		}
-
-		s.broadcastMessage(payload)
-		user.send("System message sent successfully")
-		log.Printf("[ADMIN] System message sent by admin '%s' (ID: %s): %s", user.name, user.userID, systemMessage)
+			Time:    time.Now().UTC().Format(time.RFC3339),
+		})
+		user.sendSystem("System message sent")
 		return true
 	default:
-		user.send("ERROR: Unknown admin command")
+		user.sendSystem("Unknown admin command")
 		return true
 	}
-}
-
-func isHTTPRequest(firstLine string) bool {
-	httpMethods := []string{"GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"}
-	for _, method := range httpMethods {
-		if strings.HasPrefix(firstLine, method+" ") {
-			return true
-		}
-	}
-	return false
 }
 
 func main() {
@@ -971,18 +961,13 @@ func main() {
 	go server.run()
 
 	log.Printf("[STARTUP] IRC Server started on port %s", port)
-	log.Printf("[STARTUP] Auth endpoint: %s", authURL)
-	log.Printf("[STARTUP] Server ready to accept connections")
 
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			log.Printf("[ERROR] Error accepting connection: %v", err)
+			log.Printf("[ERROR] Connection error: %v", err)
 			continue
 		}
-
-		log.Printf("[CONNECTION] New connection from %s", conn.RemoteAddr())
-
 		go server.handleConnection(conn)
 	}
 }
