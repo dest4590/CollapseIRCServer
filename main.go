@@ -377,17 +377,33 @@ func (s *Server) handleConnection(conn net.Conn) {
 		clientName = "CollapseLoader"
 	}
 
-	realUserID, usernameFromAuth, role, err := s.authenticateUser(token)
 	isAuthenticated := true
-	if err != nil {
-		log.Printf("[AUTH] Invalid token for connection %s: %s", conn.RemoteAddr(), maskToken(token))
+	var realUserID string
+	var usernameFromAuth string
+	var role string
+
+	if token == "" {
+		isAuthenticated = false
+		role = "guest"
 		s.mutex.Lock()
 		guestID := fmt.Sprintf("guest-%d", s.userIDCounter)
 		s.userIDCounter++
 		s.mutex.Unlock()
 		realUserID = guestID
-		role = "guest"
-		isAuthenticated = false
+		log.Printf("[AUTH] Guest connection from %s", conn.RemoteAddr())
+	} else {
+		var err error
+		realUserID, usernameFromAuth, role, err = s.authenticateUser(token)
+		if err != nil {
+			log.Printf("[AUTH] Invalid token for connection %s: %s", conn.RemoteAddr(), maskToken(token))
+			s.mutex.Lock()
+			guestID := fmt.Sprintf("guest-%d", s.userIDCounter)
+			s.userIDCounter++
+			s.mutex.Unlock()
+			realUserID = guestID
+			role = "guest"
+			isAuthenticated = false
+		}
 	}
 
 	username := usernameFromAuth
@@ -427,7 +443,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}
 
 	if !isAuthenticated {
-		user.sendSystem("Connected as read-only guest. You can read but not send.")
+		user.sendSystem("Connected as guest. Commands are disabled, but you can chat.")
 	} else if isBanned {
 		user.sendSystem("You are banned from writing messages.")
 	} else {
@@ -475,12 +491,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 			}
 			user.lastMessageTime = currentTime
 
-			if !isAuthenticated {
-				user.sendSystem("Guests cannot send messages.")
-				continue
-			}
-
 			if strings.HasPrefix(message, "@") {
+				if !isAuthenticated {
+					user.sendSystem("Login required to use commands.")
+					continue
+				}
 				log.Printf("[COMMAND] User '%s' issued command: %s", user.name, message)
 
 				if user.isBanned && !strings.HasPrefix(message, "@help") && !strings.HasPrefix(message, "@ping") && !strings.HasPrefix(message, "@online") {
@@ -540,18 +555,12 @@ func (s *Server) findUserByPartialName(partialName string) *User {
 	partialLower := strings.ToLower(partialName)
 
 	for u := range s.users {
-		if u.role == "guest" {
-			continue
-		}
 		if strings.ToLower(u.name) == partialLower {
 			return u
 		}
 	}
 
 	for u := range s.users {
-		if u.role == "guest" {
-			continue
-		}
 		if strings.HasPrefix(strings.ToLower(u.name), partialLower) {
 			return u
 		}
@@ -565,18 +574,12 @@ func (s *Server) findAllMatchingUsers(partialName string) []*User {
 	var matches []*User
 
 	for u := range s.users {
-		if u.role == "guest" {
-			continue
-		}
 		if strings.ToLower(u.name) == partialLower {
 			return []*User{u}
 		}
 	}
 
 	for u := range s.users {
-		if u.role == "guest" {
-			continue
-		}
 		if strings.HasPrefix(strings.ToLower(u.name), partialLower) {
 			matches = append(matches, u)
 		}
@@ -809,35 +812,43 @@ func (s *Server) handleUserCommand(user *User, command string) bool {
 	case "@ping":
 		user.sendSystem("PONG")
 		return true
-	case "@online":
+	case "online":
 		s.mutex.Lock()
-		userCount := 0
+		userCount := len(s.users)
+		guestCount := 0
 		for u := range s.users {
-			if u.role != "guest" {
-				userCount++
+			if strings.ToLower(u.role) == "guest" {
+				guestCount++
 			}
 		}
 		s.mutex.Unlock()
-		user.sendSystem(fmt.Sprintf("Channel info: %d users online", userCount))
+
+		if guestCount > 0 {
+			user.sendSystem(fmt.Sprintf("Channel info: %d users online (%d guests)", userCount, guestCount))
+		} else {
+			user.sendSystem(fmt.Sprintf("Channel info: %d users online", userCount))
+		}
 		return true
 	case "@who", "@list":
 		s.mutex.Lock()
 		var userNames []string
 		for u := range s.users {
-			if u.role != "guest" {
-				displayName := u.name
+			displayName := u.name
 
-				clientInfo := u.clientName
-				if clientInfo == "" {
-					clientInfo = u.clientType
-				}
-
-				if clientInfo != "" {
-					displayName += fmt.Sprintf(" §7(%s)§r", clientInfo)
-				}
-
-				userNames = append(userNames, displayName)
+			clientInfo := u.clientName
+			if clientInfo == "" {
+				clientInfo = u.clientType
 			}
+
+			if clientInfo != "" {
+				displayName += fmt.Sprintf(" §7(%s)§r", clientInfo)
+			}
+
+			if strings.ToLower(u.role) == "guest" {
+				displayName += " [guest]"
+			}
+
+			userNames = append(userNames, displayName)
 		}
 		s.mutex.Unlock()
 
