@@ -408,7 +408,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 	username := usernameFromAuth
 	if !isAuthenticated {
-		username = fmt.Sprintf("Guest-%s", realUserID)
+		if after, ok := strings.CutPrefix(realUserID, "guest-"); ok {
+			username = "Guest-" + after
+		} else {
+			username = fmt.Sprintf("Guest-%s", realUserID)
+		}
 	}
 	username = strings.TrimSpace(username)
 	if username == "" {
