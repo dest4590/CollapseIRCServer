@@ -835,7 +835,8 @@ func (s *Server) handleUserCommand(user *User, command string) bool {
 		return true
 	case "@who", "@list":
 		s.mutex.Lock()
-		var userNames []string
+		var usersList []string
+		var guestsList []string
 		for u := range s.users {
 			displayName := u.name
 
@@ -849,14 +850,31 @@ func (s *Server) handleUserCommand(user *User, command string) bool {
 			}
 
 			if strings.ToLower(u.role) == "guest" {
-				displayName += " [guest]"
+				guestsList = append(guestsList, displayName)
+			} else {
+				usersList = append(usersList, displayName)
 			}
-
-			userNames = append(userNames, displayName)
 		}
 		s.mutex.Unlock()
 
-		user.sendSystem(fmt.Sprintf("Online users (%d): %s", len(userNames), strings.Join(userNames, ", ")))
+		total := len(usersList) + len(guestsList)
+		var b strings.Builder
+		b.WriteString(fmt.Sprintf("Online users (%d):\n", total))
+		if len(usersList) > 0 {
+			b.WriteString("Users:\n")
+			b.WriteString(strings.Join(usersList, "\n"))
+			b.WriteString("\n")
+		} else {
+			b.WriteString("Users: none\n")
+		}
+		if len(guestsList) > 0 {
+			b.WriteString("Guests:\n")
+			b.WriteString(strings.Join(guestsList, "\n"))
+		} else {
+			b.WriteString("Guests: none")
+		}
+
+		user.sendSystem(b.String())
 		return true
 	case "@help":
 		var commandPrefix string
