@@ -46,9 +46,9 @@ type IncomingPacket struct {
 }
 
 type AuthResponse struct {
-	UserID   interface{} `json:"user_id"`
-	Username string      `json:"username"`
-	Role     string      `json:"role"`
+	UserID   any    `json:"user_id"`
+	Username string `json:"username"`
+	Role     string `json:"role"`
 }
 
 type Server struct {
