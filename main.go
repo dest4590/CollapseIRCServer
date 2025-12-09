@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -53,6 +54,7 @@ type AuthResponse struct {
 
 type Server struct {
 	users         map[*User]bool
+	usernames     map[string]*User
 	bannedUsers   map[string]bool
 	broadcast     chan OutgoingPacket
 	register      chan *User
@@ -195,6 +197,7 @@ func createSecureError(publicMsg, logDetails string, args ...interface{}) error 
 func newServer() *Server {
 	server := &Server{
 		users:         make(map[*User]bool),
+		usernames:     make(map[string]*User),
 		bannedUsers:   make(map[string]bool),
 		broadcast:     make(chan OutgoingPacket),
 		register:      make(chan *User),
@@ -296,12 +299,14 @@ func (s *Server) run() {
 		case user := <-s.register:
 			s.mutex.Lock()
 			s.users[user] = true
+			s.usernames[strings.ToLower(user.name)] = user
 			s.mutex.Unlock()
 			log.Printf("[REGISTER] User '%s' (ID: %s, role: %s, client: %s, type: %s) connected from %s", user.name, user.userID, user.role, user.clientName, user.clientType, user.socket.RemoteAddr())
 		case user := <-s.unregister:
 			s.mutex.Lock()
 			if _, ok := s.users[user]; ok {
 				delete(s.users, user)
+				delete(s.usernames, strings.ToLower(user.name))
 				log.Printf("[UNREGISTER] User '%s' (ID: %s, role: %s, client: %s, type: %s) disconnected from %s", user.name, user.userID, user.role, user.clientName, user.clientType, user.socket.RemoteAddr())
 			}
 			s.mutex.Unlock()
@@ -353,6 +358,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 	decoder := json.NewDecoder(conn)
 	encoder := json.NewEncoder(conn)
 
+	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 	var authPacket IncomingPacket
 	err := decoder.Decode(&authPacket)
 	if err != nil {
@@ -460,6 +466,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}()
 
 	for {
+		conn.SetReadDeadline(time.Now().Add(2 * time.Minute))
 		var packet IncomingPacket
 		err := decoder.Decode(&packet)
 		if err != nil {
@@ -553,10 +560,8 @@ func (s *Server) handleConnection(conn net.Conn) {
 func (s *Server) findUserByPartialName(partialName string) *User {
 	partialLower := strings.ToLower(partialName)
 
-	for u := range s.users {
-		if strings.ToLower(u.name) == partialLower {
-			return u
-		}
+	if u, ok := s.usernames[partialLower]; ok {
+		return u
 	}
 
 	for u := range s.users {
@@ -572,10 +577,8 @@ func (s *Server) findAllMatchingUsers(partialName string) []*User {
 	partialLower := strings.ToLower(partialName)
 	var matches []*User
 
-	for u := range s.users {
-		if strings.ToLower(u.name) == partialLower {
-			return []*User{u}
-		}
+	if u, ok := s.usernames[partialLower]; ok {
+		return []*User{u}
 	}
 
 	for u := range s.users {
@@ -628,13 +631,7 @@ func (s *Server) handlePrivateMessage(user *User, message string) {
 	if len(uniqueIDs) > 1 {
 		var names []string
 		for _, u := range matches {
-			found := false
-			for _, n := range names {
-				if n == u.name {
-					found = true
-					break
-				}
-			}
+			found := slices.Contains(names, u.name)
 			if !found {
 				names = append(names, u.name)
 			}
@@ -854,7 +851,7 @@ func (s *Server) handleUserCommand(user *User, command string) bool {
 
 		total := len(usersList) + len(guestsList)
 		var b strings.Builder
-		b.WriteString(fmt.Sprintf("Online users (%d):\n", total))
+		fmt.Fprintf(&b, "Online users (%d):\n", total)
 		if len(usersList) > 0 {
 			b.WriteString("Users:\n")
 			b.WriteString(strings.Join(usersList, "\n"))
