@@ -450,11 +450,6 @@ func (s *Server) handleConnection(conn net.Conn) {
 		user.sendSystem("Connected as guest. Commands are disabled, but you can chat.")
 	} else if isBanned {
 		user.sendSystem("You are banned from writing messages.")
-	} else {
-		user.sendPacket(OutgoingPacket{
-			Type:    "auth_success",
-			Content: fmt.Sprintf("Welcome %s!", username),
-		})
 	}
 
 	s.register <- user
