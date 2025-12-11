@@ -10,6 +10,7 @@ import (
 	"os"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,8 @@ const (
 	userIDURL        = "https://auth.collapseloader.org/auth/irc-info"
 	adminTimeout     = 10 * time.Second
 	bannedUsersFile  = "banned_users.txt"
+	bannedIPsFile    = "banned_ips.txt"
+	userProfileURL   = "https://auth.collapseloader.org/auth/users/%s/profile/"
 	maxUsernameChars = 32
 	maxMessageChars  = 256
 	tokenMaskLength  = 8
@@ -52,10 +55,33 @@ type AuthResponse struct {
 	Role     string `json:"role"`
 }
 
+type UserProfile struct {
+	ID          int          `json:"id"`
+	Username    string       `json:"username"`
+	Nickname    *string      `json:"nickname"`
+	Role        *string      `json:"role"`
+	MemberSince *string      `json:"member_since"`
+	AvatarURL   *string      `json:"avatar_url"`
+	SocialLinks []SocialLink `json:"social_links"`
+	Status      *UserStatus  `json:"status"`
+}
+
+type SocialLink struct {
+	Platform string `json:"platform"`
+	URL      string `json:"url"`
+}
+
+type UserStatus struct {
+	IsOnline      bool    `json:"is_online"`
+	LastSeen      *string `json:"last_seen"`
+	CurrentClient *string `json:"current_client"`
+}
+
 type Server struct {
 	users         map[*User]bool
 	usernames     map[string]*User
 	bannedUsers   map[string]bool
+	bannedIPs     map[string]bool
 	broadcast     chan OutgoingPacket
 	register      chan *User
 	unregister    chan *User
@@ -73,9 +99,11 @@ type User struct {
 	token              string
 	clientName         string
 	clientType         string
+	ip                 string
 	lastMessageTime    time.Time
 	lastPrivatePartner string
 	isBanned           bool
+	mutex              sync.Mutex
 }
 
 type OutgoingPacket struct {
@@ -199,6 +227,7 @@ func newServer() *Server {
 		users:         make(map[*User]bool),
 		usernames:     make(map[string]*User),
 		bannedUsers:   make(map[string]bool),
+		bannedIPs:     make(map[string]bool),
 		broadcast:     make(chan OutgoingPacket),
 		register:      make(chan *User),
 		unregister:    make(chan *User),
@@ -206,6 +235,7 @@ func newServer() *Server {
 		history:       make([]OutgoingPacket, 0, historyLimit),
 	}
 	server.loadBannedUsers()
+	server.loadBannedIPs()
 	return server
 }
 
@@ -238,6 +268,37 @@ func (s *Server) saveBannedUsers() {
 		file.WriteString(userID + "\n")
 	}
 	log.Printf("[INFO] Saved %d banned users to file", len(s.bannedUsers))
+}
+
+func (s *Server) loadBannedIPs() {
+	data, err := os.ReadFile(bannedIPsFile)
+	if err != nil {
+		log.Printf("[INFO] No banned IPs file found, starting with empty IP ban list")
+		return
+	}
+
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			s.bannedIPs[line] = true
+		}
+	}
+	log.Printf("[INFO] Loaded %d banned IPs", len(s.bannedIPs))
+}
+
+func (s *Server) saveBannedIPs() {
+	file, err := os.Create(bannedIPsFile)
+	if err != nil {
+		log.Printf("[ERROR] Failed to create banned IPs file: %v", err)
+		return
+	}
+	defer file.Close()
+
+	for ip := range s.bannedIPs {
+		file.WriteString(ip + "\n")
+	}
+	log.Printf("[INFO] Saved %d banned IPs to file", len(s.bannedIPs))
 }
 
 func (s *Server) authenticateUser(token string) (string, string, string, error) {
@@ -355,12 +416,27 @@ func (s *Server) broadcastMessage(packet OutgoingPacket) {
 func (s *Server) handleConnection(conn net.Conn) {
 	defer conn.Close()
 
+	host, _, err := net.SplitHostPort(conn.RemoteAddr().String())
+	if err != nil {
+		host = conn.RemoteAddr().String()
+	}
+
+	s.mutex.Lock()
+	ipBanned := s.bannedIPs[host]
+	s.mutex.Unlock()
+
+	if ipBanned {
+		log.Printf("[SECURITY] Rejected connection from banned IP: %s", host)
+		json.NewEncoder(conn).Encode(OutgoingPacket{Type: "error", Content: "Your IP is banned"})
+		return
+	}
+
 	decoder := json.NewDecoder(conn)
 	encoder := json.NewEncoder(conn)
 
 	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 	var authPacket IncomingPacket
-	err := decoder.Decode(&authPacket)
+	err = decoder.Decode(&authPacket)
 	if err != nil {
 		log.Printf("[ERROR] Failed to decode auth packet from %s: %v", conn.RemoteAddr(), err)
 		return
@@ -448,6 +524,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		token:              token,
 		clientName:         clientName,
 		clientType:         clientType,
+		ip:                 host,
 		lastPrivatePartner: "",
 		isBanned:           isBanned,
 	}
@@ -715,6 +792,8 @@ func (s *Server) handleQuickReply(user *User, message string) {
 	log.Printf("[PRIVATE REPLY] %s -> %s: %s", user.name, user.lastPrivatePartner, replyMessage)
 }
 func (u *User) sendPacket(packet OutgoingPacket) {
+	u.mutex.Lock()
+	defer u.mutex.Unlock()
 	err := u.encoder.Encode(packet)
 	if err != nil {
 		log.Printf("[ERROR] Failed to send JSON to user '%s': %v", u.name, err)
@@ -794,6 +873,70 @@ func (s *Server) authenticateAdmin(token string) bool {
 	defer resp.Body.Close()
 
 	return resp.StatusCode == 200
+}
+
+func (s *Server) fetchUserProfile(userID string, token string) (*UserProfile, error) {
+	client := &http.Client{
+		Timeout: adminTimeout,
+	}
+
+	url := fmt.Sprintf(userProfileURL, userID)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Authorization", "Token "+token)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("failed to fetch profile, status: %d", resp.StatusCode)
+	}
+
+	var profile UserProfile
+	if err := json.NewDecoder(resp.Body).Decode(&profile); err != nil {
+		return nil, err
+	}
+
+	return &profile, nil
+}
+
+func (s *Server) sendProfileInfo(user *User, profile *UserProfile) {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Profile for %s (ID: %d):\n", profile.Username, profile.ID)
+	if profile.Nickname != nil {
+		fmt.Fprintf(&b, "Nickname: %s\n", *profile.Nickname)
+	}
+	if profile.Role != nil {
+		fmt.Fprintf(&b, "Role: %s\n", *profile.Role)
+	}
+	if profile.MemberSince != nil {
+		fmt.Fprintf(&b, "Member Since: %s\n", *profile.MemberSince)
+	}
+	if profile.Status != nil {
+		status := "Offline"
+		if profile.Status.IsOnline {
+			status = "Online"
+		}
+		fmt.Fprintf(&b, "Status: %s", status)
+		if profile.Status.CurrentClient != nil {
+			fmt.Fprintf(&b, " using %s", *profile.Status.CurrentClient)
+		}
+		b.WriteString("\n")
+	}
+	if len(profile.SocialLinks) > 0 {
+		b.WriteString("Social Links:\n")
+		for _, link := range profile.SocialLinks {
+			fmt.Fprintf(&b, "- %s: %s\n", link.Platform, link.URL)
+		}
+	}
+
+	user.sendSystem(b.String())
 }
 
 func (s *Server) handleUserCommand(user *User, command string) bool {
@@ -883,13 +1026,53 @@ func (s *Server) handleUserCommand(user *User, command string) bool {
 			commandPrefix + "who / " + commandPrefix + "list - List online users\n" +
 			commandPrefix + "help - Show this help message\n" +
 			commandPrefix + "msg <nickname> <message> - Send private message (supports partial names)\n" +
-			commandPrefix + "r <message> - Reply to last private message\n" +
-			"Admin commands (require authentication):\n" +
-			commandPrefix + "ban <user_id> - Ban a user\n" +
-			commandPrefix + "unban <user_id> - Unban a user\n" +
-			commandPrefix + "sysmsg <message> - Send system message to all users"
+			commandPrefix + "r <message> - Reply to last private message\n"
+
+		role := strings.ToLower(strings.TrimSpace(user.role))
+		if role == "admin" || role == "owner" {
+			helpText += "Admin commands (require authentication):\n" +
+				commandPrefix + "profile [nickname] - View user profile\n" +
+				commandPrefix + "ban <user_id> - Ban a user\n" +
+				commandPrefix + "unban <user_id> - Unban a user\n" +
+				commandPrefix + "banip <user_id|ip> - Ban an IP address\n" +
+				commandPrefix + "unbanip <ip> - Unban an IP address\n" +
+				commandPrefix + "sysmsg <message> - Send system message to all users"
+		}
 
 		user.sendSystem(helpText)
+		return true
+	case "@profile":
+		if !s.authenticateAdmin(user.token) {
+			user.sendSystem("ERROR: You are not authorized")
+			return true
+		}
+
+		var targetUserID string
+		if len(parts) < 2 {
+			targetUserID = user.userID
+		} else {
+			targetName := parts[1]
+			if _, err := strconv.Atoi(targetName); err == nil {
+				targetUserID = targetName
+			} else {
+				targetUser := s.findUserByPartialName(targetName)
+				if targetUser == nil {
+					user.sendSystem(fmt.Sprintf("User '%s' not found online.", targetName))
+					return true
+				}
+				targetUserID = targetUser.userID
+			}
+		}
+
+		go func(uid, token string) {
+			profile, err := s.fetchUserProfile(uid, token)
+			if err != nil {
+				user.sendSystem("Failed to fetch profile: " + err.Error())
+				return
+			}
+			s.sendProfileInfo(user, profile)
+		}(targetUserID, user.token)
+
 		return true
 	default:
 		return false
@@ -949,6 +1132,49 @@ func (s *Server) handleAdminCommand(user *User, command string) bool {
 		s.mutex.Unlock()
 
 		user.sendSystem(fmt.Sprintf("User %s unbanned", targetID))
+		return true
+	case "banip":
+		target := parts[1]
+		var ipToBan string
+
+		s.mutex.Lock()
+		for u := range s.users {
+			if u.userID == target {
+				ipToBan = u.ip
+				break
+			}
+		}
+		s.mutex.Unlock()
+
+		if ipToBan == "" {
+			ipToBan = target
+		}
+
+		s.mutex.Lock()
+		s.bannedIPs[ipToBan] = true
+		s.mutex.Unlock()
+		s.saveBannedIPs()
+
+		s.mutex.Lock()
+		for u := range s.users {
+			if u.ip == ipToBan {
+				u.isBanned = true
+				u.sendSystem("Your IP has been banned.")
+				u.socket.Close()
+			}
+		}
+		s.mutex.Unlock()
+
+		user.sendSystem(fmt.Sprintf("IP %s banned", ipToBan))
+		return true
+	case "unbanip":
+		targetIP := parts[1]
+		s.mutex.Lock()
+		delete(s.bannedIPs, targetIP)
+		s.mutex.Unlock()
+		s.saveBannedIPs()
+
+		user.sendSystem(fmt.Sprintf("IP %s unbanned", targetIP))
 		return true
 	case "sysmsg":
 		role := strings.ToLower(strings.TrimSpace(user.role))
