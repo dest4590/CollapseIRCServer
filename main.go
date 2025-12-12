@@ -536,7 +536,10 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}
 
 	s.register <- user
-	s.sendHistoryToUser(user)
+
+	if strings.ToLower(strings.TrimSpace(user.clientType)) != "client" {
+		s.sendHistoryToUser(user)
+	}
 
 	defer func() {
 		s.unregister <- user
