@@ -25,6 +25,8 @@ const (
 	adminTimeout     = 10 * time.Second
 	bannedUsersFile  = "banned_users.txt"
 	bannedIPsFile    = "banned_ips.txt"
+	mutedUsersFile   = "muted_users.txt"
+	mutedIPsFile     = "muted_ips.txt"
 	userProfileURL   = "https://auth.collapseloader.org/auth/users/%s/profile/"
 	maxUsernameChars = 32
 	maxMessageChars  = 256
@@ -82,6 +84,8 @@ type Server struct {
 	usernames     map[string]*User
 	bannedUsers   map[string]bool
 	bannedIPs     map[string]bool
+	mutedUsers    map[string]bool
+	mutedIPs      map[string]bool
 	broadcast     chan OutgoingPacket
 	register      chan *User
 	unregister    chan *User
@@ -103,6 +107,7 @@ type User struct {
 	lastMessageTime    time.Time
 	lastPrivatePartner string
 	isBanned           bool
+	isMuted            bool
 	mutex              sync.Mutex
 }
 
@@ -227,6 +232,8 @@ func newServer() *Server {
 		users:         make(map[*User]bool),
 		usernames:     make(map[string]*User),
 		bannedUsers:   make(map[string]bool),
+		mutedUsers:    make(map[string]bool),
+		mutedIPs:      make(map[string]bool),
 		bannedIPs:     make(map[string]bool),
 		broadcast:     make(chan OutgoingPacket),
 		register:      make(chan *User),
@@ -234,6 +241,8 @@ func newServer() *Server {
 		userIDCounter: 1,
 		history:       make([]OutgoingPacket, 0, historyLimit),
 	}
+	server.loadMutedUsers()
+	server.loadMutedIPs()
 	server.loadBannedUsers()
 	server.loadBannedIPs()
 	return server
@@ -299,6 +308,68 @@ func (s *Server) saveBannedIPs() {
 		file.WriteString(ip + "\n")
 	}
 	log.Printf("[INFO] Saved %d banned IPs to file", len(s.bannedIPs))
+}
+
+func (s *Server) loadMutedUsers() {
+	data, err := os.ReadFile(mutedUsersFile)
+	if err != nil {
+		log.Printf("[INFO] No muted users file found, starting with empty mute list")
+		return
+	}
+
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			s.mutedUsers[line] = true
+		}
+	}
+	log.Printf("[INFO] Loaded %d muted users", len(s.mutedUsers))
+}
+
+func (s *Server) saveMutedUsers() {
+	file, err := os.Create(mutedUsersFile)
+	if err != nil {
+		log.Printf("[ERROR] Failed to create muted users file: %v", err)
+		return
+	}
+	defer file.Close()
+
+	for userID := range s.mutedUsers {
+		file.WriteString(userID + "\n")
+	}
+	log.Printf("[INFO] Saved %d muted users to file", len(s.mutedUsers))
+}
+
+func (s *Server) loadMutedIPs() {
+	data, err := os.ReadFile(mutedIPsFile)
+	if err != nil {
+		log.Printf("[INFO] No muted IPs file found, starting with empty IP mute list")
+		return
+	}
+
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			s.mutedIPs[line] = true
+		}
+	}
+	log.Printf("[INFO] Loaded %d muted IPs", len(s.mutedIPs))
+}
+
+func (s *Server) saveMutedIPs() {
+	file, err := os.Create(mutedIPsFile)
+	if err != nil {
+		log.Printf("[ERROR] Failed to create muted IPs file: %v", err)
+		return
+	}
+	defer file.Close()
+
+	for ip := range s.mutedIPs {
+		file.WriteString(ip + "\n")
+	}
+	log.Printf("[INFO] Saved %d muted IPs to file", len(s.mutedIPs))
 }
 
 func (s *Server) authenticateUser(token string) (string, string, string, error) {
@@ -423,6 +494,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 	s.mutex.Lock()
 	ipBanned := s.bannedIPs[host]
+	ipMuted := s.mutedIPs[host]
 	s.mutex.Unlock()
 
 	if ipBanned {
@@ -513,6 +585,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 	s.mutex.Lock()
 	isBanned := s.bannedUsers[realUserID]
+	isMuted := s.mutedUsers[realUserID] || ipMuted
 	s.mutex.Unlock()
 
 	user := &User{
@@ -527,12 +600,15 @@ func (s *Server) handleConnection(conn net.Conn) {
 		ip:                 host,
 		lastPrivatePartner: "",
 		isBanned:           isBanned,
+		isMuted:            isMuted,
 	}
 
 	if !isAuthenticated {
 		user.sendSystem("Connected as guest. Commands are disabled, but you can chat.")
 	} else if isBanned {
 		user.sendSystem("You are banned from writing messages.")
+	} else if isMuted {
+		user.sendSystem("You are muted.")
 	}
 
 	s.register <- user
@@ -619,6 +695,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 			if user.isBanned {
 				user.sendSystem("You are banned.")
+				continue
+			}
+
+			if user.isMuted {
+				user.sendSystem("You are muted.")
 				continue
 			}
 
@@ -909,9 +990,12 @@ func (s *Server) fetchUserProfile(userID string, token string) (*UserProfile, er
 	return &profile, nil
 }
 
-func (s *Server) sendProfileInfo(user *User, profile *UserProfile) {
+func (s *Server) sendProfileInfo(user *User, profile *UserProfile, ip string) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Profile for %s (ID: %d):\n", profile.Username, profile.ID)
+	if ip != "" {
+		fmt.Fprintf(&b, "IP: %s\n", ip)
+	}
 	if profile.Nickname != nil {
 		fmt.Fprintf(&b, "Nickname: %s\n", *profile.Nickname)
 	}
@@ -1039,6 +1123,10 @@ func (s *Server) handleUserCommand(user *User, command string) bool {
 				commandPrefix + "unban <user_id> - Unban a user\n" +
 				commandPrefix + "banip <user_id|ip> - Ban an IP address\n" +
 				commandPrefix + "unbanip <ip> - Unban an IP address\n" +
+				commandPrefix + "mute <user_id> - Mute a user\n" +
+				commandPrefix + "unmute <user_id> - Unmute a user\n" +
+				commandPrefix + "muteip <user_id|ip> - Mute an IP address\n" +
+				commandPrefix + "unmuteip <ip> - Unmute an IP address\n" +
 				commandPrefix + "sysmsg <message> - Send system message to all users"
 		}
 
@@ -1067,14 +1155,44 @@ func (s *Server) handleUserCommand(user *User, command string) bool {
 			}
 		}
 
-		go func(uid, token string) {
+		if strings.HasPrefix(targetUserID, "guest-") {
+			var targetUser *User
+			s.mutex.Lock()
+			for u := range s.users {
+				if u.userID == targetUserID {
+					targetUser = u
+					break
+				}
+			}
+			s.mutex.Unlock()
+
+			if targetUser != nil {
+				info := fmt.Sprintf("Guest Profile:\nName: %s\nID: %s\nIP: %s\nConnected: Yes", targetUser.name, targetUser.userID, targetUser.ip)
+				user.sendSystem(info)
+			} else {
+				user.sendSystem("Guest not found online.")
+			}
+			return true
+		}
+
+		var targetIP string
+		s.mutex.Lock()
+		for u := range s.users {
+			if u.userID == targetUserID {
+				targetIP = u.ip
+				break
+			}
+		}
+		s.mutex.Unlock()
+
+		go func(uid, token, ip string) {
 			profile, err := s.fetchUserProfile(uid, token)
 			if err != nil {
 				user.sendSystem("Failed to fetch profile: " + err.Error())
 				return
 			}
-			s.sendProfileInfo(user, profile)
-		}(targetUserID, user.token)
+			s.sendProfileInfo(user, profile, ip)
+		}(targetUserID, user.token, targetIP)
 
 		return true
 	default:
@@ -1178,6 +1296,95 @@ func (s *Server) handleAdminCommand(user *User, command string) bool {
 		s.saveBannedIPs()
 
 		user.sendSystem(fmt.Sprintf("IP %s unbanned", targetIP))
+		return true
+	case "mute":
+		targetID := parts[1]
+		s.mutex.Lock()
+		s.mutedUsers[targetID] = true
+		s.mutex.Unlock()
+		s.saveMutedUsers()
+
+		s.mutex.Lock()
+		for connectedUser := range s.users {
+			if connectedUser.userID == targetID {
+				connectedUser.isMuted = true
+				connectedUser.sendSystem("You have been muted.")
+				break
+			}
+		}
+		s.mutex.Unlock()
+
+		user.sendSystem(fmt.Sprintf("User %s muted", targetID))
+		return true
+	case "unmute":
+		targetID := parts[1]
+		s.mutex.Lock()
+		delete(s.mutedUsers, targetID)
+		s.mutex.Unlock()
+		s.saveMutedUsers()
+
+		s.mutex.Lock()
+		for connectedUser := range s.users {
+			if connectedUser.userID == targetID {
+				connectedUser.isMuted = false
+				connectedUser.sendSystem("You have been unmuted.")
+				break
+			}
+		}
+		s.mutex.Unlock()
+
+		user.sendSystem(fmt.Sprintf("User %s unmuted", targetID))
+		return true
+	case "muteip":
+		target := parts[1]
+		var ipToMute string
+
+		s.mutex.Lock()
+		for u := range s.users {
+			if u.userID == target {
+				ipToMute = u.ip
+				break
+			}
+		}
+		s.mutex.Unlock()
+
+		if ipToMute == "" {
+			ipToMute = target
+		}
+
+		s.mutex.Lock()
+		s.mutedIPs[ipToMute] = true
+		s.mutex.Unlock()
+		s.saveMutedIPs()
+
+		s.mutex.Lock()
+		for u := range s.users {
+			if u.ip == ipToMute {
+				u.isMuted = true
+				u.sendSystem("Your IP has been muted.")
+			}
+		}
+		s.mutex.Unlock()
+
+		user.sendSystem(fmt.Sprintf("IP %s muted", ipToMute))
+		return true
+	case "unmuteip":
+		targetIP := parts[1]
+		s.mutex.Lock()
+		delete(s.mutedIPs, targetIP)
+		s.mutex.Unlock()
+		s.saveMutedIPs()
+
+		s.mutex.Lock()
+		for u := range s.users {
+			if u.ip == targetIP {
+				u.isMuted = false
+				u.sendSystem("Your IP has been unmuted.")
+			}
+		}
+		s.mutex.Unlock()
+
+		user.sendSystem(fmt.Sprintf("IP %s unmuted", targetIP))
 		return true
 	case "sysmsg":
 		role := strings.ToLower(strings.TrimSpace(user.role))

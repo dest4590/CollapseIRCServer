@@ -12,6 +12,8 @@
 -   Private messaging (@msg, @r).
 -   Role-based colors and permissions.
 -   Ban/unban system.
+-   Mute system (mute users or IPs to block public messages).
+-   Admin profile IP info (admins can view the IP for users/guests when available).
 -   System messages.
 
 ### User Roles & Colors
@@ -93,17 +95,24 @@ Commands are sent inside the `content` field starting with `@`:
 
 ### Available Commands (In Chat)
 
-| Command            | Description                       |
-| ------------------ | --------------------------------- |
-| @ping              | Check connection (returns PONG)   |
-| @online            | Show online user count            |
-| @who / @list       | List all connected users          |
-| @help              | Show help                         |
-| @msg <nick> <text> | Send private message              |
-| @r <text>          | Quick reply to last PM            |
-| @ban <user_id>     | (Admin+) Ban user                 |
-| @unban <user_id>   | (Admin+) Unban user               |
-| @sysmsg <text>     | (Admin+/Dev/Owner) System message |
+| Command             | Description                                                                |
+| ------------------- | -------------------------------------------------------------------------- |
+| @ping               | Check connection (returns PONG)                                            |
+| @online             | Show online user count                                                     |
+| @who / @list        | List all connected users                                                   |
+| @help               | Show help                                                                  |
+| @msg <nick> <text>  | Send private message                                                       |
+| @r <text>           | Quick reply to last PM                                                     |
+| @profile [nickname] | (Admin+) View user profile (shows IP if available; guests show IP locally) |
+| @ban <user_id>      | (Admin+) Ban user                                                          |
+| @unban <user_id>    | (Admin+) Unban user                                                        |
+| @banip <ip>         | (Admin+) Ban IP (by IP or user's current IP)                               |
+| @unbanip <ip>       | (Admin+) Unban IP                                                          |
+| @mute <user_id>     | (Admin+) Mute a user's public chat                                         |
+| @unmute <user_id>   | (Admin+) Unmute a user                                                     |
+| @muteip <ip>        | (Admin+) Mute an IP (block public chat)                                    |
+| @unmuteip <ip>      | (Admin+) Unmute an IP                                                      |
+| @sysmsg <text>      | (Admin/Dev/Owner) System message                                           |
 
 ### Quick Start (Docker)
 
