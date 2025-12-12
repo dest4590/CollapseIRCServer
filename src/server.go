@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"strings"
+	"time"
 )
 
 func newServer() *Server {
@@ -27,8 +28,13 @@ func newServer() *Server {
 }
 
 func (s *Server) run() {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+
 	for {
 		select {
+		case <-ticker.C:
+			s.broadcastRoomState()
 		case user := <-s.register:
 			s.mutex.Lock()
 			s.users[user] = true
@@ -83,6 +89,36 @@ func (s *Server) sendHistoryToUser(user *User) {
 func (s *Server) broadcastMessage(packet OutgoingPacket) {
 	s.appendToHistory(packet)
 	s.broadcast <- packet
+}
+
+func (s *Server) broadcastRoomState() {
+	s.mutex.Lock()
+	usersCount := 0
+	guestsCount := 0
+	for user := range s.users {
+		if user.role == "guest" {
+			guestsCount++
+		} else {
+			usersCount++
+		}
+	}
+	s.mutex.Unlock()
+
+	packet := OutgoingPacket{
+		Type: "room_state",
+		RoomState: &RoomState{
+			OnlineUsers:  usersCount,
+			OnlineGuests: guestsCount,
+		},
+	}
+
+	s.mutex.Lock()
+	for user := range s.users {
+		if user.clientType == "loader" {
+			go user.sendPacket(packet)
+		}
+	}
+	s.mutex.Unlock()
 }
 
 func (s *Server) findUserByPartialName(partialName string) *User {

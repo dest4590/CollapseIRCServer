@@ -235,8 +235,13 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 			outPacket := OutgoingPacket{
 				Type:    "chat",
+				ID:      fmt.Sprintf("%d-%d", time.Now().UnixNano(), s.userIDCounter),
 				Time:    time.Now().UTC().Format(time.RFC3339),
-				Content: fullMessage,
+				Content: fullMessage, // Keep full message for backward compatibility if needed, or just message
+				Sender: &SenderInfo{
+					Username: user.name,
+					Role:     user.role,
+				},
 			}
 
 			s.broadcastMessage(outPacket)

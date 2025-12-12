@@ -75,9 +75,22 @@ type User struct {
 	mutex              sync.Mutex
 }
 
+type SenderInfo struct {
+	Username string `json:"username"`
+	Role     string `json:"role"`
+}
+
+type RoomState struct {
+	OnlineUsers  int `json:"online_users"`
+	OnlineGuests int `json:"online_guests"`
+}
+
 type OutgoingPacket struct {
-	Type    string `json:"type"`
-	Time    string `json:"time,omitempty"`
-	Content string `json:"content"`
-	History bool   `json:"history,omitempty"`
+	Type      string      `json:"type"`
+	ID        string      `json:"id,omitempty"`
+	Time      string      `json:"time,omitempty"`
+	Sender    *SenderInfo `json:"sender,omitempty"`
+	Content   string      `json:"content,omitempty"`
+	History   bool        `json:"history,omitempty"`
+	RoomState *RoomState  `json:"room_state,omitempty"`
 }
