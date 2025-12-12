@@ -506,6 +506,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 	decoder := json.NewDecoder(conn)
 	encoder := json.NewEncoder(conn)
 
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		tcpConn.SetKeepAlive(true)
+		tcpConn.SetKeepAlivePeriod(20 * time.Second)
+	}
+
 	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 	var authPacket IncomingPacket
 	err = decoder.Decode(&authPacket)
@@ -626,9 +631,14 @@ func (s *Server) handleConnection(conn net.Conn) {
 		var packet IncomingPacket
 		err := decoder.Decode(&packet)
 		if err != nil {
-			if err != io.EOF {
-				log.Printf("[DISCONNECT] Decode error for '%s': %v", user.name, err)
+			if err == io.EOF {
+				break
 			}
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				log.Printf("[TIMEOUT] Read timeout for '%s': %v", user.name, err)
+				continue
+			}
+			log.Printf("[DISCONNECT] Decode error for '%s': %v", user.name, err)
 			break
 		}
 
