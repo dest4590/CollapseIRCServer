@@ -990,11 +990,50 @@ func (s *Server) fetchUserProfile(userID string, token string) (*UserProfile, er
 	return &profile, nil
 }
 
+func geolocateIP(ip string) (string, error) {
+	if ip == "" {
+		return "", nil
+	}
+
+	client := &http.Client{Timeout: adminTimeout}
+	url := fmt.Sprintf("http://ip-api.com/json/%s?fields=status,country,countryCode", ip)
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return "", err
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Status      string `json:"status"`
+		Country     string `json:"country"`
+		CountryCode string `json:"countryCode"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+
+	if strings.ToLower(result.Status) != "success" {
+		return "", fmt.Errorf("geolocation failed for ip %s", ip)
+	}
+
+	return result.Country, nil
+}
+
 func (s *Server) sendProfileInfo(user *User, profile *UserProfile, ip string) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Profile for %s (ID: %d):\n", profile.Username, profile.ID)
 	if ip != "" {
 		fmt.Fprintf(&b, "IP: %s\n", ip)
+		if country, err := geolocateIP(ip); err == nil && country != "" {
+			fmt.Fprintf(&b, "Country: %s\n", country)
+		}
 	}
 	if profile.Nickname != nil {
 		fmt.Fprintf(&b, "Nickname: %s\n", *profile.Nickname)
@@ -1168,6 +1207,11 @@ func (s *Server) handleUserCommand(user *User, command string) bool {
 
 			if targetUser != nil {
 				info := fmt.Sprintf("Guest Profile:\nName: %s\nID: %s\nIP: %s\nConnected: Yes", targetUser.name, targetUser.userID, targetUser.ip)
+				if targetUser.ip != "" {
+					if country, err := geolocateIP(targetUser.ip); err == nil && country != "" {
+						info = info + fmt.Sprintf("\nCountry: %s", country)
+					}
+				}
 				user.sendSystem(info)
 			} else {
 				user.sendSystem("Guest not found online.")
