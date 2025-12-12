@@ -127,7 +127,7 @@ docker compose up --build -d
 ```bash
 git clone https://github.com/dest4590/CollapseIRCServer
 cd CollapseIRCServer
-go run main.go
+go run ./src
 ```
 
 Server listens on port **1338**.
