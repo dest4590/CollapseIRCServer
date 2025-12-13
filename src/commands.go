@@ -692,7 +692,7 @@ func (s *Server) sendProfileInfo(user *User, profile *UserProfile, ip string) {
 			status = "Online"
 		}
 		fmt.Fprintf(&b, "Status: %s", status)
-		if profile.Status.CurrentClient != nil {
+		if profile.Status.IsOnline && profile.Status.CurrentClient != nil && *profile.Status.CurrentClient != "" {
 			fmt.Fprintf(&b, " using %s", *profile.Status.CurrentClient)
 		}
 		b.WriteString("\n")
