@@ -7,7 +7,6 @@ import (
 
 const (
 	cooldown         = 1 * time.Second
-	maxMsgLength     = 256
 	authURL          = "https://auth.collapseloader.org/auth/status"
 	userIDURL        = "https://auth.collapseloader.org/auth/irc-info"
 	adminTimeout     = 10 * time.Second
@@ -25,6 +24,8 @@ const (
 var (
 	usernamePattern   = regexp.MustCompile(`^[\p{L}\p{N}\p{P}\p{Z}§<>\?{}\[\]"';]{1,256}$`)
 	messagePattern    = regexp.MustCompile(`^[\p{L}\p{N}\p{P}\p{Z}§<>\?{}\[\]"';]{1,256}$`)
+	invalidMCColorRe  = regexp.MustCompile(`§[^0-9a-fklmnor]`)
+	multiSpaceRe      = regexp.MustCompile(`\s+`)
 	dangerousPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`\x00|\x01|\x02|\x03|\x04|\x05|\x06|\x07|\x08|\x0E|\x0F`),
 		regexp.MustCompile(`\\x[0-9a-fA-F]{2}`),

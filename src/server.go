@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const roomStateTick = 15 * time.Second
+
 func newServer() *Server {
 	server := &Server{
 		users:         make(map[*User]bool),
@@ -28,7 +30,7 @@ func newServer() *Server {
 }
 
 func (s *Server) run() {
-	ticker := time.NewTicker(15 * time.Second)
+	ticker := time.NewTicker(roomStateTick)
 	defer ticker.Stop()
 
 	for {
@@ -36,32 +38,59 @@ func (s *Server) run() {
 		case <-ticker.C:
 			s.broadcastRoomState()
 		case user := <-s.register:
-			s.mutex.Lock()
-			s.users[user] = true
-			s.usernames[strings.ToLower(user.name)] = user
-			s.mutex.Unlock()
+			s.addUser(user)
 			log.Printf("[REGISTER] User '%s' (ID: %s, role: %s, client: %s, type: %s) connected from %s", user.name, user.userID, user.role, user.clientName, user.clientType, user.socket.RemoteAddr())
 		case user := <-s.unregister:
-			s.mutex.Lock()
-			if _, ok := s.users[user]; ok {
-				delete(s.users, user)
-				delete(s.usernames, strings.ToLower(user.name))
+			if s.removeUser(user) {
 				log.Printf("[UNREGISTER] User '%s' (ID: %s, role: %s, client: %s, type: %s) disconnected from %s", user.name, user.userID, user.role, user.clientName, user.clientType, user.socket.RemoteAddr())
 			}
-			s.mutex.Unlock()
 		case packet := <-s.broadcast:
-			s.mutex.Lock()
-			activeUsers := 0
-			for user := range s.users {
-				go func(u *User, p OutgoingPacket) {
-					u.sendPacket(p)
-				}(user, packet)
-				activeUsers++
+			users := s.snapshotUsers()
+			for _, u := range users {
+				go u.sendPacket(packet)
 			}
-			s.mutex.Unlock()
-			log.Printf("[BROADCAST] Message sent to %d active users", activeUsers)
+			log.Printf("[BROADCAST] Message sent to %d active users", len(users))
 		}
 	}
+}
+
+func (s *Server) addUser(user *User) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	s.users[user] = true
+	s.usernames[strings.ToLower(user.name)] = user
+}
+
+func (s *Server) removeUser(user *User) bool {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if _, ok := s.users[user]; !ok {
+		return false
+	}
+	delete(s.users, user)
+	delete(s.usernames, strings.ToLower(user.name))
+	return true
+}
+
+func (s *Server) snapshotUsers() []*User {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	users := make([]*User, 0, len(s.users))
+	for u := range s.users {
+		users = append(users, u)
+	}
+	return users
+}
+
+func (s *Server) findUserByID(userID string) *User {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	for u := range s.users {
+		if u.userID == userID {
+			return u
+		}
+	}
+	return nil
 }
 
 func (s *Server) appendToHistory(packet OutgoingPacket) {
@@ -95,11 +124,16 @@ func (s *Server) broadcastRoomState() {
 	s.mutex.Lock()
 	usersCount := 0
 	guestsCount := 0
+	var targets []*User
+
 	for user := range s.users {
 		if user.role == "guest" {
 			guestsCount++
 		} else {
 			usersCount++
+		}
+		if user.clientType == "loader" {
+			targets = append(targets, user)
 		}
 	}
 	s.mutex.Unlock()
@@ -112,45 +146,50 @@ func (s *Server) broadcastRoomState() {
 		},
 	}
 
-	s.mutex.Lock()
-	for user := range s.users {
-		if user.clientType == "loader" {
-			go user.sendPacket(packet)
-		}
+	for _, user := range targets {
+		go user.sendPacket(packet)
 	}
-	s.mutex.Unlock()
 }
 
 func (s *Server) findUserByPartialName(partialName string) *User {
-	partialLower := strings.ToLower(partialName)
+	partialLower := strings.ToLower(strings.TrimSpace(partialName))
+	if partialLower == "" {
+		return nil
+	}
+
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
 
 	if u, ok := s.usernames[partialLower]; ok {
 		return u
 	}
-
 	for u := range s.users {
 		if strings.HasPrefix(strings.ToLower(u.name), partialLower) {
 			return u
 		}
 	}
-
 	return nil
 }
 
 func (s *Server) findAllMatchingUsers(partialName string) []*User {
-	partialLower := strings.ToLower(partialName)
-	var matches []*User
+	partialLower := strings.ToLower(strings.TrimSpace(partialName))
+	if partialLower == "" {
+		return nil
+	}
+
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
 
 	if u, ok := s.usernames[partialLower]; ok {
 		return []*User{u}
 	}
 
+	var matches []*User
 	for u := range s.users {
 		if strings.HasPrefix(strings.ToLower(u.name), partialLower) {
 			matches = append(matches, u)
 		}
 	}
-
 	return matches
 }
 

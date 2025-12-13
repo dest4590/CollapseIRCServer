@@ -110,9 +110,15 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}
 
 	s.mutex.Lock()
-	isBanned := s.bannedUsers[realUserID]
-	isMuted := s.mutedUsers[realUserID] || ipMuted
+	isBanned := s.bannedUsers[realUserID] || s.bannedUsers[username] || s.bannedUsers[strings.ToLower(username)]
+	isMuted := s.mutedUsers[realUserID] || s.mutedUsers[username] || s.mutedUsers[strings.ToLower(username)] || ipMuted
 	s.mutex.Unlock()
+
+	if isBanned {
+		log.Printf("[SECURITY] Rejected connection from banned user: %s (ID: %s)", username, realUserID)
+		json.NewEncoder(conn).Encode(OutgoingPacket{Type: "error", Content: "You are banned"})
+		return
+	}
 
 	user := &User{
 		socket:             conn,
@@ -131,8 +137,6 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 	if !isAuthenticated {
 		user.sendSystem("Connected as guest. Commands are disabled, but you can chat.")
-	} else if isBanned {
-		user.sendSystem("You are banned from writing messages.")
 	} else if isMuted {
 		user.sendSystem("You are muted.")
 	}

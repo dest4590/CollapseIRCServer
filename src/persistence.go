@@ -3,129 +3,96 @@ package main
 import (
 	"log"
 	"os"
+	"sort"
 	"strings"
 )
 
-func (s *Server) loadBannedUsers() {
-	data, err := os.ReadFile(bannedUsersFile)
+func loadStringSet(filename, label string, set map[string]bool) {
+	data, err := os.ReadFile(filename)
 	if err != nil {
-		log.Printf("[INFO] No banned users file found, starting with empty ban list")
+		if os.IsNotExist(err) {
+			log.Printf("[INFO] No %s file found, starting with empty list", label)
+			return
+		}
+		log.Printf("[ERROR] Failed to read %s file: %v", label, err)
 		return
 	}
 
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
+	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line != "" {
-			s.bannedUsers[line] = true
+			set[line] = true
 		}
 	}
-	log.Printf("[INFO] Loaded %d banned users", len(s.bannedUsers))
+	log.Printf("[INFO] Loaded %d %s", len(set), label)
+}
+
+func saveStringKeys(filename, label string, keys []string) {
+	sort.Strings(keys)
+	data := strings.Join(keys, "\n")
+	if len(keys) > 0 {
+		data += "\n"
+	}
+
+	if err := os.WriteFile(filename, []byte(data), 0644); err != nil {
+		log.Printf("[ERROR] Failed to write %s file: %v", label, err)
+		return
+	}
+	log.Printf("[INFO] Saved %d %s to file", len(keys), label)
+}
+
+func (s *Server) loadBannedUsers() {
+	loadStringSet(bannedUsersFile, "banned users", s.bannedUsers)
 }
 
 func (s *Server) saveBannedUsers() {
-	file, err := os.Create(bannedUsersFile)
-	if err != nil {
-		log.Printf("[ERROR] Failed to create banned users file: %v", err)
-		return
+	s.mutex.Lock()
+	keys := make([]string, 0, len(s.bannedUsers))
+	for k := range s.bannedUsers {
+		keys = append(keys, k)
 	}
-	defer file.Close()
-
-	for userID := range s.bannedUsers {
-		file.WriteString(userID + "\n")
-	}
-	log.Printf("[INFO] Saved %d banned users to file", len(s.bannedUsers))
+	s.mutex.Unlock()
+	saveStringKeys(bannedUsersFile, "banned users", keys)
 }
 
 func (s *Server) loadBannedIPs() {
-	data, err := os.ReadFile(bannedIPsFile)
-	if err != nil {
-		log.Printf("[INFO] No banned IPs file found, starting with empty IP ban list")
-		return
-	}
-
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			s.bannedIPs[line] = true
-		}
-	}
-	log.Printf("[INFO] Loaded %d banned IPs", len(s.bannedIPs))
+	loadStringSet(bannedIPsFile, "banned IPs", s.bannedIPs)
 }
 
 func (s *Server) saveBannedIPs() {
-	file, err := os.Create(bannedIPsFile)
-	if err != nil {
-		log.Printf("[ERROR] Failed to create banned IPs file: %v", err)
-		return
+	s.mutex.Lock()
+	keys := make([]string, 0, len(s.bannedIPs))
+	for k := range s.bannedIPs {
+		keys = append(keys, k)
 	}
-	defer file.Close()
-
-	for ip := range s.bannedIPs {
-		file.WriteString(ip + "\n")
-	}
-	log.Printf("[INFO] Saved %d banned IPs to file", len(s.bannedIPs))
+	s.mutex.Unlock()
+	saveStringKeys(bannedIPsFile, "banned IPs", keys)
 }
 
 func (s *Server) loadMutedUsers() {
-	data, err := os.ReadFile(mutedUsersFile)
-	if err != nil {
-		log.Printf("[INFO] No muted users file found, starting with empty mute list")
-		return
-	}
-
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			s.mutedUsers[line] = true
-		}
-	}
-	log.Printf("[INFO] Loaded %d muted users", len(s.mutedUsers))
+	loadStringSet(mutedUsersFile, "muted users", s.mutedUsers)
 }
 
 func (s *Server) saveMutedUsers() {
-	file, err := os.Create(mutedUsersFile)
-	if err != nil {
-		log.Printf("[ERROR] Failed to create muted users file: %v", err)
-		return
+	s.mutex.Lock()
+	keys := make([]string, 0, len(s.mutedUsers))
+	for k := range s.mutedUsers {
+		keys = append(keys, k)
 	}
-	defer file.Close()
-
-	for userID := range s.mutedUsers {
-		file.WriteString(userID + "\n")
-	}
-	log.Printf("[INFO] Saved %d muted users to file", len(s.mutedUsers))
+	s.mutex.Unlock()
+	saveStringKeys(mutedUsersFile, "muted users", keys)
 }
 
 func (s *Server) loadMutedIPs() {
-	data, err := os.ReadFile(mutedIPsFile)
-	if err != nil {
-		log.Printf("[INFO] No muted IPs file found, starting with empty IP mute list")
-		return
-	}
-
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			s.mutedIPs[line] = true
-		}
-	}
-	log.Printf("[INFO] Loaded %d muted IPs", len(s.mutedIPs))
+	loadStringSet(mutedIPsFile, "muted IPs", s.mutedIPs)
 }
 
 func (s *Server) saveMutedIPs() {
-	file, err := os.Create(mutedIPsFile)
-	if err != nil {
-		log.Printf("[ERROR] Failed to create muted IPs file: %v", err)
-		return
+	s.mutex.Lock()
+	keys := make([]string, 0, len(s.mutedIPs))
+	for k := range s.mutedIPs {
+		keys = append(keys, k)
 	}
-	defer file.Close()
-
-	for ip := range s.mutedIPs {
-		file.WriteString(ip + "\n")
-	}
-	log.Printf("[INFO] Saved %d muted IPs to file", len(s.mutedIPs))
+	s.mutex.Unlock()
+	saveStringKeys(mutedIPsFile, "muted IPs", keys)
 }

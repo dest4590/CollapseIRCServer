@@ -3,17 +3,29 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 )
 
-func (s *Server) authenticateUser(token string) (string, string, string, error) {
-	client := &http.Client{
-		Timeout: adminTimeout,
-	}
+func authClient() *http.Client {
+	return &http.Client{Timeout: adminTimeout}
+}
 
-	resp, err := client.Get(userIDURL + "/" + token + "/")
+func stringifyUserID(v any) (string, error) {
+	switch typed := v.(type) {
+	case string:
+		return typed, nil
+	case float64:
+		return fmt.Sprintf("%.0f", typed), nil
+	case int:
+		return fmt.Sprintf("%d", typed), nil
+	default:
+		return "", fmt.Errorf("unexpected user_id type %T", v)
+	}
+}
+
+func (s *Server) authenticateUser(token string) (string, string, string, error) {
+	resp, err := authClient().Get(userIDURL + "/" + token + "/")
 	if err != nil {
 		return "", "", "", createSecureError(
 			"authentication failed",
@@ -27,32 +39,18 @@ func (s *Server) authenticateUser(token string) (string, string, string, error) 
 			"invalid token, status code: %d, token: %s", resp.StatusCode, maskToken(token))
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	var authResponse AuthResponse
+	if err := json.NewDecoder(resp.Body).Decode(&authResponse); err != nil {
+		return "", "", "", createSecureError(
+			"authentication failed",
+			"failed to decode auth JSON for token %s: %v", maskToken(token), err)
+	}
+
+	userID, err := stringifyUserID(authResponse.UserID)
 	if err != nil {
 		return "", "", "", createSecureError(
 			"authentication failed",
-			"failed to read auth response for token %s: %v", maskToken(token), err)
-	}
-
-	var authResponse AuthResponse
-	if err := json.Unmarshal(body, &authResponse); err != nil {
-		return "", "", "", createSecureError(
-			"authentication failed",
-			"failed to parse auth JSON for token %s: %v", maskToken(token), err)
-	}
-
-	var userID string
-	switch v := authResponse.UserID.(type) {
-	case string:
-		userID = v
-	case float64:
-		userID = fmt.Sprintf("%.0f", v)
-	case int:
-		userID = fmt.Sprintf("%d", v)
-	default:
-		return "", "", "", createSecureError(
-			"authentication failed",
-			"unexpected user_id type %T for token %s", v, maskToken(token))
+			"%v for token %s", err, maskToken(token))
 	}
 
 	role := strings.TrimSpace(authResponse.Role)
@@ -62,10 +60,6 @@ func (s *Server) authenticateUser(token string) (string, string, string, error) 
 }
 
 func (s *Server) authenticateAdmin(token string) bool {
-	client := &http.Client{
-		Timeout: adminTimeout,
-	}
-
 	req, err := http.NewRequest("GET", authURL, nil)
 	if err != nil {
 		// log.Printf("[ERROR] Failed to create admin auth request: %v", err)
@@ -74,7 +68,7 @@ func (s *Server) authenticateAdmin(token string) bool {
 
 	req.Header.Set("Authorization", "Token "+token)
 
-	resp, err := client.Do(req)
+	resp, err := authClient().Do(req)
 	if err != nil {
 		// log.Printf("[ERROR] Failed to authenticate admin token %s: %v", maskToken(token), err)
 		return false
@@ -85,10 +79,6 @@ func (s *Server) authenticateAdmin(token string) bool {
 }
 
 func (s *Server) fetchUserProfile(userID string, token string) (*UserProfile, error) {
-	client := &http.Client{
-		Timeout: adminTimeout,
-	}
-
 	url := fmt.Sprintf(userProfileURL, userID)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -97,7 +87,7 @@ func (s *Server) fetchUserProfile(userID string, token string) (*UserProfile, er
 
 	req.Header.Set("Authorization", "Token "+token)
 
-	resp, err := client.Do(req)
+	resp, err := authClient().Do(req)
 	if err != nil {
 		return nil, err
 	}

@@ -1,11 +1,12 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
-	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 func maskToken(token string) string {
@@ -16,14 +17,13 @@ func maskToken(token string) string {
 }
 
 func sanitizeUsername(username string) (string, error) {
-	if len(username) == 0 {
+	username = strings.TrimSpace(username)
+	if username == "" {
 		return "", fmt.Errorf("username cannot be empty")
 	}
-	if len(username) > maxUsernameChars {
+	if utf8.RuneCountInString(username) > maxUsernameChars {
 		return "", fmt.Errorf("username too long")
 	}
-
-	username = strings.TrimSpace(username)
 
 	if !usernamePattern.MatchString(username) {
 		return "", fmt.Errorf("username contains invalid characters")
@@ -39,21 +39,14 @@ func sanitizeUsername(username string) (string, error) {
 }
 
 func sanitizeMessage(message string) (string, error) {
-	if len(message) == 0 {
+	if message == "" {
 		return "", fmt.Errorf("message cannot be empty")
 	}
-	if len(message) > maxMessageChars {
+	if utf8.RuneCountInString(message) > maxMessageChars {
 		return "", fmt.Errorf("message too long")
 	}
 
-	var cleaned strings.Builder
-	for _, r := range message {
-		if unicode.IsControl(r) && r != '\n' && r != '\t' {
-			continue
-		}
-		cleaned.WriteRune(r)
-	}
-	message = cleaned.String()
+	message = removeControlChars(message)
 
 	if !messagePattern.MatchString(message) {
 		return "", fmt.Errorf("message contains invalid characters")
@@ -65,14 +58,11 @@ func sanitizeMessage(message string) (string, error) {
 		}
 	}
 
-	message = sanitizeMinecraftColors(message)
-
-	return message, nil
+	return sanitizeMinecraftColors(message), nil
 }
 
 func sanitizeMinecraftColors(text string) string {
-	invalidColorCode := regexp.MustCompile(`§[^0-9a-fklmnor]`)
-	return invalidColorCode.ReplaceAllString(text, "§f")
+	return invalidMCColorRe.ReplaceAllString(text, "§f")
 }
 
 func sanitizeString(input string) string {
@@ -81,21 +71,13 @@ func sanitizeString(input string) string {
 		return ""
 	}
 
-	var b strings.Builder
-	for _, r := range input {
-		if unicode.IsControl(r) && r != '\n' && r != '\t' {
-			continue
-		}
-		b.WriteRune(r)
-	}
-	s := b.String()
+	s := removeControlChars(input)
 
 	for _, p := range dangerousPatterns {
 		s = p.ReplaceAllString(s, "")
 	}
 
-	spaceRe := regexp.MustCompile(`\s+`)
-	s = spaceRe.ReplaceAllString(s, " ")
+	s = multiSpaceRe.ReplaceAllString(s, " ")
 
 	runes := []rune(s)
 	if len(runes) > maxMessageChars {
@@ -108,13 +90,24 @@ func sanitizeString(input string) string {
 	return s
 }
 
+func removeControlChars(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsControl(r) && r != '\n' && r != '\t' {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 func createSecureError(publicMsg, logDetails string, args ...interface{}) error {
 	if len(args) > 0 {
 		log.Printf("[SECURITY] "+logDetails, args...)
 	} else {
 		log.Printf("[SECURITY] %s", logDetails)
 	}
-	return fmt.Errorf("%s", publicMsg)
+	return errors.New(publicMsg)
 }
 
 func formatNameWithRole(u *User) string {
@@ -129,11 +122,7 @@ func formatNameWithRole(u *User) string {
 
 	roleLabel, ok := displayRoleMap[role]
 	if !ok {
-		if len(role) > 0 {
-			roleLabel = strings.Title(strings.ToLower(role))
-		} else {
-			roleLabel = role
-		}
+		roleLabel = titleASCII(strings.ToLower(role))
 	}
 
 	client := strings.TrimSpace(u.clientName)
@@ -143,4 +132,11 @@ func formatNameWithRole(u *User) string {
 	}
 
 	return fmt.Sprintf("§%s%s§r%s [§%s%s§r]", color, u.name, clientPart, color, roleLabel)
+}
+
+func titleASCII(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }
