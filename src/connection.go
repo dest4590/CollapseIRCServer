@@ -245,6 +245,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 				Sender: &SenderInfo{
 					Username: user.name,
 					Role:     user.role,
+					UserID:   user.userID,
 				},
 			}
 

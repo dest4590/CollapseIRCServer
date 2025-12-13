@@ -78,6 +78,7 @@ type User struct {
 type SenderInfo struct {
 	Username string `json:"username"`
 	Role     string `json:"role"`
+	UserID   string `json:"user_id,omitempty"`
 }
 
 type RoomState struct {
