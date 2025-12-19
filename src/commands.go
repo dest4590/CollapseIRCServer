@@ -575,7 +575,7 @@ func (s *Server) handleAdminCommand(user *User, command string) bool {
 }
 
 func (s *Server) handlePrivateMessage(user *User, message string) {
-	if user.isMuted {
+	if user.isMuted && !user.isAdminOrOwner() {
 		user.sendSystem("You are muted.")
 		return
 	}
@@ -624,6 +624,11 @@ func (s *Server) handlePrivateMessage(user *User, message string) {
 }
 
 func (s *Server) handleQuickReply(user *User, message string) {
+	if user.isMuted && !user.isAdminOrOwner() {
+		user.sendSystem("You are muted.")
+		return
+	}
+
 	if user.lastPrivatePartner == "" {
 		user.sendSystem("No previous private conversation found")
 		return

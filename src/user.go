@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"strings"
 	"time"
 )
 
@@ -20,4 +21,9 @@ func (u *User) sendSystem(message string) {
 		Content: message,
 		Time:    time.Now().UTC().Format(time.RFC3339),
 	})
+}
+
+func (u *User) isAdminOrOwner() bool {
+	role := strings.ToLower(strings.TrimSpace(u.role))
+	return role == "admin" || role == "owner"
 }

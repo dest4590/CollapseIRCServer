@@ -99,13 +99,16 @@ func (s *Server) handleConnection(conn net.Conn) {
 		username = fmt.Sprintf("User-%s", realUserID)
 	}
 
-	sanitizedUsername, err := sanitizeUsername(username)
-	if err == nil {
-		username = sanitizedUsername
-	} else {
-		username = sanitizeString(username)
-		if username == "" {
-			username = fmt.Sprintf("User-%s", realUserID)
+	roleLower := strings.ToLower(strings.TrimSpace(role))
+	if roleLower != "admin" && roleLower != "owner" {
+		sanitizedUsername, err := sanitizeUsername(username)
+		if err == nil {
+			username = sanitizedUsername
+		} else {
+			username = sanitizeString(username)
+			if username == "" {
+				username = fmt.Sprintf("User-%s", realUserID)
+			}
 		}
 	}
 
@@ -170,18 +173,30 @@ func (s *Server) handleConnection(conn net.Conn) {
 		case "chat":
 			message := strings.TrimSpace(packet.Content)
 
-			sanitizedMessage, err := sanitizeMessage(message)
-			if err != nil {
-				user.sendSystem("Invalid message format")
-				continue
-			}
-			message = sanitizedMessage
+			if !user.isAdminOrOwner() {
+				sanitizedMessage, err := sanitizeMessage(message)
+				if err != nil {
+					user.sendSystem("Invalid message format")
+					continue
+				}
+				message = sanitizedMessage
 
-			currentTime := time.Now()
-			if currentTime.Sub(user.lastMessageTime) < cooldown {
-				continue
+				currentTime := time.Now()
+				if currentTime.Sub(user.lastMessageTime) < cooldown {
+					continue
+				}
+				user.lastMessageTime = currentTime
+
+				if user.isBanned {
+					user.sendSystem("You are banned.")
+					continue
+				}
+
+				if user.isMuted {
+					user.sendSystem("You are muted.")
+					continue
+				}
 			}
-			user.lastMessageTime = currentTime
 
 			if strings.HasPrefix(message, "@") {
 				if !isAuthenticated {
@@ -190,7 +205,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 				}
 				log.Printf("[COMMAND] User '%s' issued command: %s", user.name, message)
 
-				if user.isBanned && !strings.HasPrefix(message, "@help") && !strings.HasPrefix(message, "@ping") && !strings.HasPrefix(message, "@online") {
+				if user.isBanned && !user.isAdminOrOwner() && !strings.HasPrefix(message, "@help") && !strings.HasPrefix(message, "@ping") && !strings.HasPrefix(message, "@online") {
 					user.sendSystem("You are banned.")
 					continue
 				}
@@ -220,16 +235,6 @@ func (s *Server) handleConnection(conn net.Conn) {
 				}
 
 				user.sendSystem(fmt.Sprintf("Unknown command. Use %shelp", commandPrefix))
-				continue
-			}
-
-			if user.isBanned {
-				user.sendSystem("You are banned.")
-				continue
-			}
-
-			if user.isMuted {
-				user.sendSystem("You are muted.")
 				continue
 			}
 
