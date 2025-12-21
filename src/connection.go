@@ -62,7 +62,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 	var usernameFromAuth string
 	var role string
 
-	if token == "" {
+	if token == "" || token == "null" {
 		isAuthenticated = false
 		role = "guest"
 		s.mutex.Lock()
