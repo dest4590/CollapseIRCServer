@@ -21,7 +21,7 @@ const (
 	historyLimit     = 50
 	authBackendEnv   = "AUTH_BACKEND"
 	atlasBaseURLEnv  = "ATLAS_BASE_URL"
-	defaultAtlasURL  = "https://api.collapseloader.org"
+	defaultAtlasURL  = "https://atlas.collapseloader.org"
 	atlasInfoPath    = "/api/v1/users/me"
 )
 

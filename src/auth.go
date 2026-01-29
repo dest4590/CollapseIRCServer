@@ -90,14 +90,15 @@ func (s *Server) authenticateUserAtlas(token string) (string, string, string, er
 	if resp.StatusCode != 200 {
 		return "", "", "", createSecureError(
 			"authentication failed",
-			"Atlas invalid token, status code: %d", resp.StatusCode)
+			"Atlas invalid token (URL: %s), status code: %d", url, resp.StatusCode)
 	}
 
 	var atlasResponse AtlasApiResponse[AtlasUserMeResponse]
 	if err := json.NewDecoder(resp.Body).Decode(&atlasResponse); err != nil {
+		// Try to read and log the raw body on decode failure
 		return "", "", "", createSecureError(
 			"authentication failed",
-			"failed to decode Atlas auth JSON: %v", err)
+			"failed to decode Atlas auth JSON for token %s: %v", maskToken(token), err)
 	}
 
 	if !atlasResponse.Success {

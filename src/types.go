@@ -34,9 +34,10 @@ type AtlasUserProfile struct {
 }
 
 type AtlasApiResponse[T any] struct {
-	Success bool   `json:"success"`
-	Data    T      `json:"data"`
-	Error   string `json:"error,omitempty"`
+	Success   bool   `json:"success"`
+	Data      T      `json:"data"`
+	Error     string `json:"error,omitempty"`
+	Timestamp int64  `json:"timestamp"`
 }
 
 type UserProfile struct {

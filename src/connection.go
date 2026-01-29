@@ -75,7 +75,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		var err error
 		realUserID, usernameFromAuth, role, err = s.authenticateUser(token)
 		if err != nil {
-			log.Printf("[AUTH] Invalid token for connection %s: %s", conn.RemoteAddr(), maskToken(token))
+			log.Printf("[AUTH] Invalid token for connection %s: %v (token: %s)", conn.RemoteAddr(), err, maskToken(token))
 			s.mutex.Lock()
 			guestID := fmt.Sprintf("guest-%d", s.userIDCounter)
 			s.userIDCounter++
