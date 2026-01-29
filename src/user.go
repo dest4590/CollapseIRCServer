@@ -25,5 +25,5 @@ func (u *User) sendSystem(message string) {
 
 func (u *User) isAdminOrOwner() bool {
 	role := strings.ToLower(strings.TrimSpace(u.role))
-	return role == "admin" || role == "owner"
+	return role == "admin" || role == "owner" || role == "developer"
 }

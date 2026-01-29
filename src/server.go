@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"os"
 	"strings"
 	"time"
 )
@@ -21,6 +22,11 @@ func newServer() *Server {
 		unregister:    make(chan *User),
 		userIDCounter: 1,
 		history:       make([]OutgoingPacket, 0, historyLimit),
+		authBackend:   strings.ToLower(os.Getenv(authBackendEnv)),
+		atlasBaseURL:  os.Getenv(atlasBaseURLEnv),
+	}
+	if server.atlasBaseURL == "" {
+		server.atlasBaseURL = defaultAtlasURL
 	}
 	server.loadMutedUsers()
 	server.loadMutedIPs()

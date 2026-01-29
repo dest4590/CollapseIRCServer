@@ -21,6 +21,24 @@ type AuthResponse struct {
 	Role     string `json:"role"`
 }
 
+type AtlasUserMeResponse struct {
+	ID       int              `json:"id"`
+	Username string           `json:"username"`
+	Role     string           `json:"role"`
+	Profile  AtlasUserProfile `json:"profile"`
+}
+
+type AtlasUserProfile struct {
+	Nickname  *string `json:"nickname"`
+	AvatarURL *string `json:"avatar_url"`
+}
+
+type AtlasApiResponse[T any] struct {
+	Success bool   `json:"success"`
+	Data    T      `json:"data"`
+	Error   string `json:"error,omitempty"`
+}
+
 type UserProfile struct {
 	ID          int          `json:"id"`
 	Username    string       `json:"username"`
@@ -56,6 +74,8 @@ type Server struct {
 	mutex         sync.Mutex
 	userIDCounter uint64
 	history       []OutgoingPacket
+	authBackend   string
+	atlasBaseURL  string
 }
 
 type User struct {

@@ -19,6 +19,10 @@ const (
 	maxMessageChars  = 256
 	tokenMaskLength  = 8
 	historyLimit     = 50
+	authBackendEnv   = "AUTH_BACKEND"
+	atlasBaseURLEnv  = "ATLAS_BASE_URL"
+	defaultAtlasURL  = "https://api.collapseloader.org"
+	atlasInfoPath    = "/api/v1/users/me"
 )
 
 var (
