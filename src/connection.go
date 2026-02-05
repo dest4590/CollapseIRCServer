@@ -181,11 +181,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 				}
 				message = sanitizedMessage
 
-				currentTime := time.Now()
-				if currentTime.Sub(user.lastMessageTime) < cooldown {
+				allowed, rateLimitMsg := user.checkRateLimit()
+				if !allowed {
+					user.sendSystem(rateLimitMsg)
 					continue
 				}
-				user.lastMessageTime = currentTime
 
 				if user.isBanned {
 					user.sendSystem("You are banned.")

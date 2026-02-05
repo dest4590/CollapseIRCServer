@@ -94,6 +94,11 @@ type User struct {
 	isBanned           bool
 	isMuted            bool
 	mutex              sync.Mutex
+
+	messageTimestamps  []time.Time
+	rateLimitViolations int
+	lastViolationTime   time.Time
+	tempMutedUntil      time.Time
 }
 
 type SenderInfo struct {

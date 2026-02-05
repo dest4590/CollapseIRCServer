@@ -337,6 +337,10 @@ func (s *Server) handleUserCommand(user *User, command string) bool {
 
 		user.sendSystem(b.String())
 		return true
+	case "@ratelimit":
+		status := user.getRateLimitStatus()
+		user.sendSystem(status)
+		return true
 	case "@help":
 		commandPrefix := commandPrefixFor(user)
 
@@ -344,6 +348,7 @@ func (s *Server) handleUserCommand(user *User, command string) bool {
 			commandPrefix + "ping - Test server connection\n" +
 			commandPrefix + "online - Show number of online users\n" +
 			commandPrefix + "who / " + commandPrefix + "list - List online users\n" +
+			commandPrefix + "ratelimit - Check your rate limit status\n" +
 			commandPrefix + "help - Show this help message\n" +
 			commandPrefix + "msg <nickname> <message> - Send private message (supports partial names)\n" +
 			commandPrefix + "r <message> - Reply to last private message\n"

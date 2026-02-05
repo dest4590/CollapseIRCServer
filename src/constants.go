@@ -23,6 +23,20 @@ const (
 	atlasBaseURLEnv  = "ATLAS_BASE_URL"
 	defaultAtlasURL  = "https://atlas.collapseloader.org"
 	atlasInfoPath    = "/api/v1/users/me"
+
+	guestMessagesPerSecond = 1
+	guestMessagesPerMinute = 30
+	guestBurstSize         = 2
+
+	userMessagesPerSecond = 2
+	userMessagesPerMinute = 60
+	userBurstSize         = 3
+
+	violationThreshold    = 5
+	violationResetTime    = 2 * time.Minute
+	tempMuteDuration      = 5 * time.Minute
+	rateLimitWindowSecond = 1 * time.Second
+	rateLimitWindowMinute = 1 * time.Minute
 )
 
 var (
