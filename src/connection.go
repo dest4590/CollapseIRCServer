@@ -246,7 +246,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 				Type:    "chat",
 				ID:      fmt.Sprintf("%d-%d", time.Now().UnixNano(), s.userIDCounter),
 				Time:    time.Now().UTC().Format(time.RFC3339),
-				Content: fullMessage, // Keep full message for backward compatibility if needed, or just message
+				Content: message,
 				Sender: &SenderInfo{
 					Username: user.name,
 					Role:     user.role,
