@@ -15,12 +15,6 @@ type IncomingPacket struct {
 	Content string `json:"content,omitempty"`
 }
 
-type AuthResponse struct {
-	UserID   any    `json:"user_id"`
-	Username string `json:"username"`
-	Role     string `json:"role"`
-}
-
 type AtlasUserMeResponse struct {
 	ID       int              `json:"id"`
 	Username string           `json:"username"`
@@ -31,6 +25,26 @@ type AtlasUserMeResponse struct {
 type AtlasUserProfile struct {
 	Nickname  *string `json:"nickname"`
 	AvatarURL *string `json:"avatar_url"`
+	Role      *string `json:"role"`
+}
+
+type AtlasPublicUserResponse struct {
+	ID       int                     `json:"id"`
+	Username string                  `json:"username"`
+	Profile  *AtlasPublicUserProfile `json:"profile"`
+	Status   *AtlasPublicUserStatus  `json:"status"`
+}
+
+type AtlasPublicUserProfile struct {
+	Nickname    *string      `json:"nickname"`
+	AvatarURL   *string      `json:"avatar_url"`
+	Role        *string      `json:"role"`
+	SocialLinks []SocialLink `json:"social_links"`
+}
+
+type AtlasPublicUserStatus struct {
+	Status     string  `json:"status"`
+	ClientName *string `json:"client_name"`
 }
 
 type AtlasApiResponse[T any] struct {
@@ -75,7 +89,6 @@ type Server struct {
 	mutex         sync.Mutex
 	userIDCounter uint64
 	history       []OutgoingPacket
-	authBackend   string
 	atlasBaseURL  string
 }
 
@@ -95,7 +108,7 @@ type User struct {
 	isMuted            bool
 	mutex              sync.Mutex
 
-	messageTimestamps  []time.Time
+	messageTimestamps   []time.Time
 	rateLimitViolations int
 	lastViolationTime   time.Time
 	tempMutedUntil      time.Time

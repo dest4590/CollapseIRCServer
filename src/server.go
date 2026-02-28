@@ -22,11 +22,10 @@ func newServer() *Server {
 		unregister:    make(chan *User),
 		userIDCounter: 1,
 		history:       make([]OutgoingPacket, 0, historyLimit),
-		authBackend:   strings.ToLower(os.Getenv(authBackendEnv)),
-		atlasBaseURL:  os.Getenv(atlasBaseURLEnv),
+		atlasBaseURL:  strings.TrimSpace(strings.TrimRight(defaultAtlasURL, "/")),
 	}
-	if server.atlasBaseURL == "" {
-		server.atlasBaseURL = defaultAtlasURL
+	if envURL := strings.TrimSpace(strings.TrimRight(os.Getenv(atlasBaseURLEnv), "/")); envURL != "" {
+		server.atlasBaseURL = envURL
 	}
 	server.loadMutedUsers()
 	server.loadMutedIPs()
@@ -34,7 +33,6 @@ func newServer() *Server {
 	server.loadBannedIPs()
 	return server
 }
-
 func (s *Server) run() {
 	ticker := time.NewTicker(roomStateTick)
 	defer ticker.Stop()

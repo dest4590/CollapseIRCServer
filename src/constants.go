@@ -7,22 +7,19 @@ import (
 
 const (
 	cooldown         = 1 * time.Second
-	authURL          = "https://auth.collapseloader.org/auth/status"
-	userIDURL        = "https://auth.collapseloader.org/auth/irc-info"
 	adminTimeout     = 10 * time.Second
 	bannedUsersFile  = "banned_users.txt"
 	bannedIPsFile    = "banned_ips.txt"
 	mutedUsersFile   = "muted_users.txt"
 	mutedIPsFile     = "muted_ips.txt"
-	userProfileURL   = "https://auth.collapseloader.org/auth/users/%s/profile/"
 	maxUsernameChars = 32
 	maxMessageChars  = 256
 	tokenMaskLength  = 8
 	historyLimit     = 50
-	authBackendEnv   = "AUTH_BACKEND"
 	atlasBaseURLEnv  = "ATLAS_BASE_URL"
 	defaultAtlasURL  = "https://atlas.collapseloader.org"
 	atlasInfoPath    = "/api/v1/users/me"
+	atlasUserPath    = "/api/v1/users/%s"
 
 	guestMessagesPerSecond = 1
 	guestMessagesPerMinute = 30

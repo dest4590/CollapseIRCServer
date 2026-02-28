@@ -11,61 +11,28 @@ func authClient() *http.Client {
 	return &http.Client{Timeout: adminTimeout}
 }
 
-func stringifyUserID(v any) (string, error) {
-	switch typed := v.(type) {
-	case string:
-		return typed, nil
-	case float64:
-		return fmt.Sprintf("%.0f", typed), nil
-	case int:
-		return fmt.Sprintf("%d", typed), nil
-	default:
-		return "", fmt.Errorf("unexpected user_id type %T", v)
+func normalizeRole(role string) string {
+	normalized := strings.ToLower(strings.TrimSpace(role))
+	if normalized == "" {
+		return ""
 	}
+
+	normalized = strings.TrimPrefix(normalized, "role_")
+	return normalized
+}
+
+func resolveAtlasRole(user AtlasUserMeResponse) string {
+	if user.Profile.Role != nil {
+		if profileRole := normalizeRole(*user.Profile.Role); profileRole != "" {
+			return profileRole
+		}
+	}
+
+	return normalizeRole(user.Role)
 }
 
 func (s *Server) authenticateUser(token string) (string, string, string, error) {
-	userID, username, role, err := s.authenticateUserAtlas(token)
-	if err == nil {
-		return userID, username, role, nil
-	}
-
-	return s.authenticateUserLegacy(token)
-}
-
-func (s *Server) authenticateUserLegacy(token string) (string, string, string, error) {
-	resp, err := authClient().Get(userIDURL + "/" + token + "/")
-	if err != nil {
-		return "", "", "", createSecureError(
-			"authentication failed",
-			"failed to authenticate token %s: %v", maskToken(token), err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return "", "", "", createSecureError(
-			"authentication failed",
-			"invalid token, status code: %d, token: %s", resp.StatusCode, maskToken(token))
-	}
-
-	var authResponse AuthResponse
-	if err := json.NewDecoder(resp.Body).Decode(&authResponse); err != nil {
-		return "", "", "", createSecureError(
-			"authentication failed",
-			"failed to decode auth JSON for token %s: %v", maskToken(token), err)
-	}
-
-	userID, err := stringifyUserID(authResponse.UserID)
-	if err != nil {
-		return "", "", "", createSecureError(
-			"authentication failed",
-			"%v for token %s", err, maskToken(token))
-	}
-
-	role := strings.TrimSpace(authResponse.Role)
-	username := strings.TrimSpace(authResponse.Username)
-
-	return userID, username, role, nil
+	return s.authenticateUserAtlas(token)
 }
 
 func (s *Server) authenticateUserAtlas(token string) (string, string, string, error) {
@@ -110,36 +77,16 @@ func (s *Server) authenticateUserAtlas(token string) (string, string, string, er
 	user := atlasResponse.Data
 	userID := fmt.Sprintf("%d", user.ID)
 	username := user.Username
-	role := strings.ToLower(user.Role)
+	role := resolveAtlasRole(user)
+	if role == "" {
+		role = "user"
+	}
 
 	return userID, username, role, nil
 }
 
 func (s *Server) authenticateAdmin(token string) bool {
-	if s.authenticateAdminAtlas(token) {
-		return true
-	}
-
-	return s.authenticateAdminLegacy(token)
-}
-
-func (s *Server) authenticateAdminLegacy(token string) bool {
-	req, err := http.NewRequest("GET", authURL, nil)
-	if err != nil {
-		// log.Printf("[ERROR] Failed to create admin auth request: %v", err)
-		return false
-	}
-
-	req.Header.Set("Authorization", "Token "+token)
-
-	resp, err := authClient().Do(req)
-	if err != nil {
-		// log.Printf("[ERROR] Failed to authenticate admin token %s: %v", maskToken(token), err)
-		return false
-	}
-	defer resp.Body.Close()
-
-	return resp.StatusCode == 200
+	return s.authenticateAdminAtlas(token)
 }
 
 func (s *Server) authenticateAdminAtlas(token string) bool {
@@ -170,18 +117,18 @@ func (s *Server) authenticateAdminAtlas(token string) bool {
 		return false
 	}
 
-	role := strings.ToLower(atlasResponse.Data.Role)
-	return role == "admin" || role == "owner" || role == "developer"
+	resolvedRole := resolveAtlasRole(atlasResponse.Data)
+	return resolvedRole == "admin" || resolvedRole == "owner" || resolvedRole == "developer"
 }
 
 func (s *Server) fetchUserProfile(userID string, token string) (*UserProfile, error) {
-	url := fmt.Sprintf(userProfileURL, userID)
+	url := fmt.Sprintf(s.atlasBaseURL+atlasUserPath, userID)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	req.Header.Set("Authorization", "Token "+token)
+	req.Header.Set("Authorization", "Bearer "+token)
 
 	resp, err := authClient().Do(req)
 	if err != nil {
@@ -189,14 +136,44 @@ func (s *Server) fetchUserProfile(userID string, token string) (*UserProfile, er
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("failed to fetch profile, status: %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to fetch profile from Atlas, status: %d", resp.StatusCode)
 	}
 
-	var profile UserProfile
-	if err := json.NewDecoder(resp.Body).Decode(&profile); err != nil {
+	var atlasResponse AtlasApiResponse[AtlasPublicUserResponse]
+	if err := json.NewDecoder(resp.Body).Decode(&atlasResponse); err != nil {
 		return nil, err
 	}
 
-	return &profile, nil
+	if !atlasResponse.Success {
+		return nil, fmt.Errorf("failed to fetch profile from Atlas: %s", atlasResponse.Error)
+	}
+
+	data := atlasResponse.Data
+	profile := &UserProfile{
+		ID:       data.ID,
+		Username: data.Username,
+	}
+
+	if data.Profile != nil {
+		profile.Nickname = data.Profile.Nickname
+		profile.AvatarURL = data.Profile.AvatarURL
+		if data.Profile.Role != nil {
+			role := normalizeRole(*data.Profile.Role)
+			if role != "" {
+				profile.Role = &role
+			}
+		}
+		profile.SocialLinks = data.Profile.SocialLinks
+	}
+
+	if data.Status != nil {
+		isOnline := strings.EqualFold(data.Status.Status, "ONLINE")
+		profile.Status = &UserStatus{
+			IsOnline:      isOnline,
+			CurrentClient: data.Status.ClientName,
+		}
+	}
+
+	return profile, nil
 }
