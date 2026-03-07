@@ -3,6 +3,8 @@
    <h1>CollapseIRCServer</h1>
 </div>
 
+# DEPRECATED, IRC NOW IN [Atlas](https://github.com/dest4590/Atlas)
+
 <p align=center>A lightweight, secure IRC server written in Go with JSON-based protocol (NDJSON), designed for CollapseLoader integration.</p>
 
 ### Core Features
